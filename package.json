@@ -9,7 +9,7 @@
     "prestart": "npm run build",
     "start": "node dist/server.js",
     "build": "rimraf dist && esbuild src/server.ts --bundle --platform=node --format=esm --packages=external --alias:@modules=./src/modules --alias:@config=./src/config --alias:@middlewares=./src/middlewares --alias:@utils=./src/utils --alias:@types=./src/types --alias:@lib=./src/lib --outdir=dist",
-    "dev": "nodemon --watch src --ext ts --exec \"npm run build && node dist/server.js\""
+    "dev": "NODE_ENV=development nodemon --watch src --ext ts --exec \"npm run build && node dist/server.js\""
   },
   "keywords": [
     "nodejs",

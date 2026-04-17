@@ -1,7 +1,13 @@
-import "dotenv/config";
+import dotenv from "dotenv";
+
+// NODE_ENV is set by the npm script (or deployment platform), never from a .env file.
+// This loads .env.development, .env.staging, or .env.production accordingly.
+const nodeEnv = process.env["NODE_ENV"] ?? "development";
+dotenv.config({ path: `.env.${nodeEnv}` });
+
 const ENV = {
-  NODE_ENV: process.env["NODE_ENV"] || "development",
-  PORT: process.env["PORT"] || 6001,
+  NODE_ENV: nodeEnv,
+  PORT: process.env["PORT"] ?? 6001,
 } as const;
 
 export default ENV;

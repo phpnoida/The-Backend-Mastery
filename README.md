@@ -38,9 +38,10 @@ project-root/
 │   │   └── catchAsync.ts      # Async controller wrapper
 │   └── lib/                   # Third-party wrappers / shared logic
 ├── dist/                      # Build output (gitignored)
+├── .env.example           # Committed — template with all keys, fake values
+├── .env.development       # Gitignored — your local dev values
 ├── package.json
-├── tsconfig.json
-└── .env
+└── tsconfig.json
 ```
 
 ---
@@ -134,16 +135,62 @@ npm install -D typescript @types/node @types/express @types/cors @types/morgan @
 }
 ```
 
-### Step 6 — Create `.env`
+### Step 6 — Set up environment files
 
-```env
-NODE_ENV=development
-PORT=6001
+**Professional pattern — never commit real env values:**
+
+| File | Committed? | Purpose |
+|------|-----------|---------|
+| `.env.example` | **Yes** | Template with all keys, fake values — tells new devs what vars are needed |
+| `.env.development` | No | Local dev values |
+| `.env.staging` | No | Staging server values |
+| `.env.production` | No | Production values (usually set by platform dashboard, not a file) |
+
+`.gitignore` pattern:
+```
+.env
+.env.*
+!.env.example
+```
+The `!` un-ignores `.env.example` so it **is** committed despite the `.*` rule.
+
+**`NODE_ENV` is never set inside a `.env` file.** It must be set before the process starts — otherwise dotenv can't know which file to load (chicken-and-egg). Set it in the npm script for dev; let the deployment platform (Heroku, Railway, AWS, Render) set it for production.
+
+```json
+"scripts": {
+  "dev":   "NODE_ENV=development nodemon ...",
+  "start": "node dist/server.js"
+}
+```
+
+> **Cross-platform note:** `NODE_ENV=x` in scripts works on Linux/Mac but fails on Windows. The fix is `npm install -D cross-env` and prefix scripts with `cross-env NODE_ENV=development`.
+
+**Onboarding a new developer:**
+```bash
+cp .env.example .env.development
+# fill in real values
+npm run dev
 ```
 
 ### Step 7 — Create `src/config/env.ts`
 
 Single source of truth for all environment variables. Add every new env var here — never read `process.env` directly anywhere else in the codebase.
+
+Loads the right file based on `NODE_ENV`:
+
+```ts
+import dotenv from "dotenv";
+
+const nodeEnv = process.env["NODE_ENV"] ?? "development";
+dotenv.config({ path: `.env.${nodeEnv}` });
+
+const ENV = {
+  NODE_ENV: nodeEnv,
+  PORT: process.env["PORT"] ?? 6001,
+} as const;
+
+export default ENV;
+```
 
 ### Step 8 — Create `src/server.ts`
 

@@ -74,6 +74,55 @@ npx tsc --noEmit
 
 ---
 
+## Environment Variables (Professional Pattern)
+
+### Files
+
+| File | Committed? | Purpose |
+|------|-----------|---------|
+| `.env.example` | **Yes** | Template with all keys, fake/placeholder values. Tells new devs what vars are needed. |
+| `.env.development` | No | Local dev values |
+| `.env.staging` | No | Staging server values |
+| `.env.production` | No | Production values (set by deployment platform, rarely a file) |
+| `.env` | No | Legacy fallback — avoid using in new projects |
+
+**Rule:** Only `.env.example` is ever committed. All real env files are in `.gitignore`.
+
+### How it works
+
+`NODE_ENV` is **never** read from a `.env` file — it is injected by the npm script or the deployment platform (Heroku, Railway, AWS, etc.):
+
+```json
+"dev": "NODE_ENV=development nodemon ..."
+```
+
+`src/config/env.ts` then loads the matching file:
+
+```ts
+dotenv.config({ path: `.env.${process.env.NODE_ENV}` })
+// → loads .env.development in dev, .env.production in prod
+```
+
+### Cross-platform note
+`NODE_ENV=development` in `package.json` scripts works on Linux/Mac but **not Windows** natively. The professional fix is `cross-env`:
+
+```bash
+npm install --save-dev cross-env
+# then in scripts:
+"dev": "cross-env NODE_ENV=development nodemon ..."
+```
+
+This repo targets Linux/production, so `cross-env` is omitted — but add it if working on Windows.
+
+### Onboarding a new developer
+```bash
+cp .env.example .env.development
+# fill in real values, then:
+npm run dev
+```
+
+---
+
 ## Architecture
 
 ### Entry Points

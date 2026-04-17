@@ -1,2 +1,7 @@
 node_modules
+dist
+
+# Never commit real env files — use .env.example as the committed template
 .env
+.env.*
+!.env.example
