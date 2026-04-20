@@ -2,30 +2,22 @@ import mongoose from "mongoose";
 import ENV from "./env.js";
 
 export const connectDB = async () => {
-  mongoose.connection.on("connected", () => {
-    console.log("MongoDB connected");
-  });
-
+  // 1. Set up the "watcher" BEFORE or during connection
   mongoose.connection.on("disconnected", () => {
-    // Fires when the TCP connection drops (internet gone, Atlas blip, etc.)
-    // Mongoose will auto-reconnect — this log tells you WHY things look broken
-    console.warn("MongoDB disconnected — Mongoose will auto-reconnect");
+    console.log("Mongoose lost connection to the database!");
   });
 
-  mongoose.connection.on("reconnected", () => {
-    console.log("MongoDB reconnected");
-  });
-
-  mongoose.connection.on("error", (err) => {
-    // Fires for ongoing connection errors after initial connect
-    console.error("MongoDB connection error:", err.message);
-  });
-
-  await mongoose.connect(ENV.MONGO_URI, {
-    maxPoolSize: 10,
-    serverSelectionTimeoutMS: 5000,
-    socketTimeoutMS: 45000,
-  });
+  try {
+    await mongoose.connect(ENV.MONGO_URI, {
+      // These are the important production options
+      maxPoolSize: 10, // max simultaneous connections in pool
+      serverSelectionTimeoutMS: 5000,
+      socketTimeoutMS: 45000,
+    });
+    console.log(`mongodb connected on ${ENV.NODE_ENV} mode`);
+  } catch (err) {
+    console.log("DB Err-->", err);
+  }
 };
 
 // Call this on graceful shutdown (SIGTERM / SIGINT in server.ts)

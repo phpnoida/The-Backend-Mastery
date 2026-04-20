@@ -1,6 +1,7 @@
 import { createServer } from "http";
 import app from "./app";
 import ENV from "@config/env";
+import { connectDB, disconnectDB } from "@config/mongoose";
 
 const server = createServer(app);
 const PORT = ENV.PORT;
@@ -13,7 +14,8 @@ process.on("uncaughtException", (err) => {
   process.exit(1); // Exit immediately because the app state is now polluted
 });
 
-const startServer = () => {
+const startServer = async () => {
+  await connectDB();
   server.listen(PORT, () => {
     console.log(`🚀 Server running in ${ENV.NODE_ENV} mode on port ${PORT}`);
   });
@@ -27,7 +29,19 @@ process.on("unhandledRejection", (err: any) => {
   console.error(err.name, err.message);
 
   // Give the server time to finish existing requests before closing
-  server.close(() => {
+  server.close(async () => {
+    await disconnectDB();
     process.exit(1);
+  });
+});
+
+// Handle BOTH Manual (SIGINT) and Production Shutdown (SIGTERM)
+["SIGINT", "SIGTERM"].forEach((signal) => {
+  process.on(signal, () => {
+    console.log(`${signal} received. Shutting down gracefully...`);
+    server.close(async () => {
+      await disconnectDB();
+      process.exit(0);
+    });
   });
 });

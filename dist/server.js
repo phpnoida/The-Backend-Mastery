@@ -4,44 +4,46 @@ import { createServer } from "http";
 // src/app.ts
 import express from "express";
 import cors from "cors";
-
-// src/modules/users/user.route.ts
-import { Router } from "express";
-
-// src/utils/catchAsync.ts
-import "express";
-var catchAsync = (fn) => {
-  return (req, res, next) => {
-    fn(req, res, next).catch((err) => next(err));
-  };
-};
-var catchAsync_default = catchAsync;
-
-// src/modules/users/user.controller.ts
-var addUser = catchAsync_default(async (req, res) => {
-  console.log("reaching inside addUser...");
-});
-
-// src/modules/users/user.route.ts
-var router = Router();
-router.route("/user/add").post(addUser);
-var user_route_default = router;
-
-// src/app.ts
 var app = express();
 app.use(express.json());
 app.use(cors());
 app.options("*splat", cors());
-app.use("/api/v1", user_route_default);
 var app_default = app;
 
 // src/config/env.ts
-import "dotenv/config";
+import dotenv from "dotenv";
+var nodeEnv = process.env["NODE_ENV"] ?? "development";
+dotenv.config({ path: `.env.${nodeEnv}` });
 var ENV = {
-  NODE_ENV: process.env["NODE_ENV"] || "development",
-  PORT: process.env["PORT"] || 6001
+  NODE_ENV: nodeEnv,
+  PORT: process.env["PORT"] ?? 6001,
+  MONGO_URI: process.env["MONGO_URI"] ?? "mongodb://localhost:27017/backend-mastery"
 };
 var env_default = ENV;
+
+// src/config/mongoose.ts
+import mongoose from "mongoose";
+var connectDB = async () => {
+  mongoose.connection.on("disconnected", () => {
+    console.log("Mongoose lost connection to the database!");
+  });
+  try {
+    await mongoose.connect(env_default.MONGO_URI, {
+      // These are the important production options
+      maxPoolSize: 10,
+      // max simultaneous connections in pool
+      serverSelectionTimeoutMS: 5e3,
+      socketTimeoutMS: 45e3
+    });
+    console.log(`mongodb connected on ${env_default.NODE_ENV} mode`);
+  } catch (err) {
+    console.log("DB Err-->", err);
+  }
+};
+var disconnectDB = async () => {
+  await mongoose.connection.close();
+  console.log("MongoDB connection closed");
+};
 
 // src/server.ts
 var server = createServer(app_default);
@@ -51,7 +53,8 @@ process.on("uncaughtException", (err) => {
   console.error(err.name, err.message);
   process.exit(1);
 });
-var startServer = () => {
+var startServer = async () => {
+  await connectDB();
   server.listen(PORT, () => {
     console.log(`\u{1F680} Server running in ${env_default.NODE_ENV} mode on port ${PORT}`);
   });
@@ -60,7 +63,17 @@ startServer();
 process.on("unhandledRejection", (err) => {
   console.error("UNHANDLED REJECTION! \u{1F4A5} Shutting down gracefully...");
   console.error(err.name, err.message);
-  server.close(() => {
+  server.close(async () => {
+    await disconnectDB();
     process.exit(1);
+  });
+});
+["SIGINT", "SIGTERM"].forEach((signal) => {
+  process.on(signal, () => {
+    console.log(`${signal} received. Shutting down gracefully...`);
+    server.close(async () => {
+      await disconnectDB();
+      process.exit(0);
+    });
   });
 });
