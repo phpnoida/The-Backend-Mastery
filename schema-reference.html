@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>MongoDB Schema Reference — The Backend Mastery</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Courier New', monospace; font-size: 12px; background: #fff; color: #111; padding: 20px; }
+
+    h1 { text-align: center; font-size: 20px; padding-bottom: 10px; border-bottom: 2px solid #111; margin-bottom: 20px; letter-spacing: 1px; }
+    h2 { font-size: 14px; font-weight: bold; margin: 24px 0 10px; padding-bottom: 4px; border-bottom: 2px solid #111; text-transform: uppercase; letter-spacing: 1px; }
+
+    /* ── ERD diagram ── */
+    .diagram-wrap { overflow-x: auto; }
+    .mermaid { min-width: 900px; }
+
+    /* ── Model Cards Grid ── */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin-top: 12px;
+    }
+
+    .card {
+      border: 1.5px solid #222;
+      page-break-inside: avoid;
+      break-inside: avoid;
+    }
+
+    .card-header {
+      background: #111;
+      color: #fff;
+      font-weight: bold;
+      font-size: 12px;
+      padding: 5px 10px;
+      letter-spacing: 0.5px;
+    }
+
+    .card-sub {
+      font-size: 10px;
+      font-weight: normal;
+      opacity: 0.75;
+      margin-left: 6px;
+    }
+
+    .card table { width: 100%; border-collapse: collapse; }
+    .card table td {
+      padding: 3px 8px;
+      border-bottom: 1px solid #e8e8e8;
+      font-size: 11px;
+      vertical-align: top;
+    }
+    .card table td:first-child { font-weight: bold; color: #111; width: 38%; }
+    .card table td:nth-child(2) { color: #555; font-style: italic; width: 22%; }
+    .card table td:nth-child(3) { color: #333; font-size: 10px; }
+
+    .tag {
+      display: inline-block;
+      font-size: 9px;
+      padding: 1px 4px;
+      border-radius: 2px;
+      font-style: normal;
+      margin-right: 2px;
+      font-weight: bold;
+    }
+    .tag-pk  { background: #111; color: #fff; }
+    .tag-fk  { background: #ddd; color: #111; }
+    .tag-uk  { background: #444; color: #fff; }
+    .tag-idx { background: #eee; color: #555; border: 1px solid #bbb; }
+    .tag-req { color: #c00; font-size: 10px; }
+    .tag-emb { background: #f5f5f5; color: #555; border: 1px solid #ccc; }
+
+    .index-row td { background: #fafafa; font-size: 10px; color: #666; border-top: 1px dashed #ccc; }
+
+    /* ── Print ── */
+    @media print {
+      body { padding: 8px; font-size: 11px; }
+      h1 { font-size: 16px; }
+      h2 { font-size: 12px; margin: 16px 0 8px; }
+      .diagram-wrap { page-break-after: always; }
+      .grid { gap: 10px; }
+      .card table td { font-size: 10px; padding: 2px 6px; }
+      a { display: none; }
+    }
+
+    @page { margin: 1cm; }
+
+    footer { text-align: center; font-size: 10px; color: #999; margin-top: 30px; border-top: 1px solid #ddd; padding-top: 10px; }
+  </style>
+</head>
+<body>
+
+<h1>MongoDB Schema Reference &nbsp;|&nbsp; The Backend Mastery</h1>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!--  SECTION 1 — RELATIONSHIP DIAGRAM                     -->
+<!-- ══════════════════════════════════════════════════════ -->
+<h2>Collection Relationships</h2>
+<div class="diagram-wrap">
+<div class="mermaid">
+erDiagram
+    CUSTOMER {
+        ObjectId _id PK
+        string   email    "unique"
+        string   tier     "silver|gold|platinum"
+        number   loyaltyPoints
+        array    address  "embedded[]"
+        date     deletedAt "null=active"
+    }
+    SELLER {
+        ObjectId _id PK
+        string   email    "unique"
+        string   gstin    "unique"
+        string   status   "pending|active|suspended"
+        number   avgRating "0-5"
+    }
+    STAFF {
+        ObjectId _id PK
+        string   email      "unique"
+        string   role
+        string   department
+        ObjectId warehouse  "FK, optional"
+        boolean  isActive
+    }
+    BRAND {
+        ObjectId _id PK
+        string   name    "unique"
+        string   slug    "unique, auto"
+        boolean  isActive
+    }
+    CATEGORY {
+        ObjectId _id PK
+        string   name           "unique"
+        string   slug           "unique, auto"
+        ObjectId parentCategory "FK self-ref"
+        boolean  isActive
+    }
+    PRODUCT {
+        ObjectId _id PK
+        string   name
+        string   slug         "unique"
+        ObjectId brand        "FK"
+        ObjectId category     "FK"
+        ObjectId seller       "FK"
+        string   status       "draft|active|inactive|banned"
+        number   avgRating    "denormalized"
+        number   reviewCount  "denormalized"
+    }
+    PRODUCTVARIANT {
+        ObjectId _id PK
+        string   name
+        string   skuCode   "unique"
+        ObjectId productId "FK"
+        Mixed    attributes "color,size etc"
+        number   mrp
+        number   sellingPrice
+        boolean  isActive
+    }
+    WAREHOUSE {
+        ObjectId _id PK
+        string   warehouseCode "unique, WH-DEL-001"
+        string   name
+        object   address       "embedded"
+        boolean  isActive
+    }
+    SUPPLIER {
+        ObjectId _id PK
+        string   companyName
+        string   email    "unique"
+        array    address  "embedded[]"
+        array    products "variantId refs[]"
+        boolean  isActive
+    }
+    ORDER {
+        ObjectId _id PK
+        ObjectId customerId    "FK"
+        string   customerName  "snapshot"
+        string   customerEmail "snapshot"
+        array    items         "embedded[]"
+        number   totalAmount
+        string   status        "pending..returned"
+        array    statusHistory "embedded[]"
+    }
+    REVIEW {
+        ObjectId _id PK
+        ObjectId customerId "FK"
+        ObjectId variantId  "FK"
+        ObjectId orderId    "FK, verify purchase"
+        number   rating     "1-5"
+        boolean  isVerified "default false"
+        boolean  isVisible  "default true"
+    }
+    INVENTORYITEM {
+        ObjectId _id PK
+        ObjectId productVariantId "FK"
+        ObjectId warehouseId      "FK"
+        number   quantityAvailable "min 0"
+        number   quantityReserved  "default 0"
+        number   quantityDamaged   "default 0"
+        number   reorderLevel
+    }
+
+    CUSTOMER       ||--o{ ORDER         : "places"
+    CUSTOMER       ||--o{ REVIEW        : "writes"
+    ORDER          ||--o{ REVIEW        : "verifies"
+    BRAND          ||--o{ PRODUCT       : "manufactures"
+    CATEGORY       ||--o{ PRODUCT       : "contains"
+    CATEGORY       }o--o| CATEGORY      : "parent"
+    SELLER         ||--o{ PRODUCT       : "sells"
+    PRODUCT        ||--o{ PRODUCTVARIANT: "has variants"
+    PRODUCTVARIANT ||--o{ REVIEW        : "reviewed via"
+    PRODUCTVARIANT ||--o{ INVENTORYITEM : "stocked as"
+    WAREHOUSE      ||--o{ INVENTORYITEM : "stores"
+    SUPPLIER       }o--o{ PRODUCTVARIANT: "supplies"
+    STAFF          }o--o| WAREHOUSE     : "assigned to"
+</div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════ -->
+<!--  SECTION 2 — MODEL FIELD REFERENCE                    -->
+<!-- ══════════════════════════════════════════════════════ -->
+<h2>Model Field Reference</h2>
+<div class="grid">
+
+  <!-- CUSTOMER -->
+  <div class="card">
+    <div class="card-header">Customer <span class="card-sub">customers</span></div>
+    <table>
+      <tr><td>_id</td><td>ObjectId</td><td><span class="tag tag-pk">PK</span></td></tr>
+      <tr><td>name</td><td>String</td><td><span class="tag-req">required</span></td></tr>
+      <tr><td>email</td><td>String</td><td><span class="tag tag-uk">UK</span> lowercase</td></tr>
+      <tr><td>phone</td><td>String</td><td><span class="tag tag-uk">UK</span> sparse</td></tr>
+      <tr><td>password</td><td>String</td><td>select:false</td></tr>
+      <tr><td>loyaltyPoints</td><td>Number</td><td>default:0</td></tr>
+      <tr><td>tier</td><td>String</td><td>silver|gold|platinum, default:silver</td></tr>
+      <tr><td>lastLogin</td><td>Date</td><td></td></tr>
+      <tr><td>deletedAt</td><td>Date</td><td>default:null (soft delete)</td></tr>
+      <tr><td>address[]</td><td>Embedded</td><td>street, city, state, country, pincode, label, isDefault</td></tr>
+      <tr><td>createdAt</td><td>Date</td><td>timestamps</td></tr>
+      <tr class="index-row"><td colspan="3"><span class="tag tag-idx">IDX</span> email unique &nbsp; <span class="tag tag-idx">IDX</span> phone unique sparse</td></tr>
+    </table>
+  </div>
+
+  <!-- SELLER -->
+  <div class="card">
+    <div class="card-header">Seller <span class="card-sub">sellers</span></div>
+    <table>
+      <tr><td>_id</td><td>ObjectId</td><td><span class="tag tag-pk">PK</span></td></tr>
+      <tr><td>businessName</td><td>String</td><td><span class="tag-req">required</span></td></tr>
+      <tr><td>ownerName</td><td>String</td><td><span class="tag-req">required</span></td></tr>
+      <tr><td>email</td><td>String</td><td><span class="tag tag-uk">UK</span></td></tr>
+      <tr><td>phone</td><td>String</td><td><span class="tag tag-idx">IDX</span></td></tr>
+      <tr><td>password</td><td>String</td><td>select:false</td></tr>
+      <tr><td>gstin</td><td>String</td><td><span class="tag tag-uk">UK</span></td></tr>
+      <tr><td>bankInfo</td><td>Embedded</td><td>select:false — accountNumber, ifsc, accountHolderName</td></tr>
+      <tr><td>status</td><td>String</td><td>pending_verification|active|suspended</td></tr>
+      <tr><td>avgRating</td><td>Number</td><td>min:0 max:5</td></tr>
+      <tr><td>createdAt</td><td>Date</td><td>timestamps</td></tr>
+    </table>
+  </div>
+
+  <!-- STAFF -->
+  <div class="card">
+    <div class="card-header">Staff <span class="card-sub">staffs</span></div>
+    <table>
+      <tr><td>_id</td><td>ObjectId</td><td><span class="tag tag-pk">PK</span></td></tr>
+      <tr><td>name</td><td>String</td><td><span class="tag-req">required</span></td></tr>
+      <tr><td>email</td><td>String</td><td><span class="tag tag-uk">UK</span> lowercase</td></tr>
+      <tr><td>phone</td><td>String</td><td></td></tr>
+      <tr><td>password</td><td>String</td><td>select:false</td></tr>
+      <tr><td>role</td><td>String</td><td>super_admin|admin|warehouse_manager|warehouse_staff|customer_support|delivery_agent</td></tr>
+      <tr><td>department</td><td>String</td><td>operations|customer_support|logistics|finance|hr|tech</td></tr>
+      <tr><td>warehouse</td><td>ObjectId</td><td><span class="tag tag-fk">FK</span> Warehouse (optional)</td></tr>
+      <tr><td>isActive</td><td>Boolean</td><td>default:true</td></tr>
+      <tr><td>lastLogin</td><td>Date</td><td></td></tr>
+      <tr><td>createdAt</td><td>Date</td><td>timestamps</td></tr>
+    </table>
+  </div>
+
+  <!-- BRAND -->
+  <div class="card">
+    <div class="card-header">Brand <span class="card-sub">brands</span></div>
+    <table>
+      <tr><td>_id</td><td>ObjectId</td><td><span class="tag tag-pk">PK</span></td></tr>
+      <tr><td>name</td><td>String</td><td><span class="tag tag-uk">UK</span> <span class="tag-req">required</span></td></tr>
+      <tr><td>slug</td><td>String</td><td><span class="tag tag-uk">UK</span> auto via pre-save hook</td></tr>
+      <tr><td>logoUrl</td><td>String</td><td><span class="tag-req">required</span></td></tr>
+      <tr><td>countryOfOrigin</td><td>String</td><td></td></tr>
+      <tr><td>isActive</td><td>Boolean</td><td>default:true</td></tr>
+      <tr><td>createdAt</td><td>Date</td><td>timestamps</td></tr>
+    </table>
+  </div>
+
+  <!-- CATEGORY -->
+  <div class="card">
+    <div class="card-header">Category <span class="card-sub">categories</span></div>
+    <table>
+      <tr><td>_id</td><td>ObjectId</td><td><span class="tag tag-pk">PK</span></td></tr>
+      <tr><td>name</td><td>String</td><td><span class="tag tag-uk">UK</span> <span class="tag-req">required</span></td></tr>
+      <tr><td>slug</td><td>String</td><td><span class="tag tag-uk">UK</span> auto via pre-save hook</td></tr>
+      <tr><td>parentCategory</td><td>ObjectId</td><td><span class="tag tag-fk">FK</span> Category (self-ref, max 3 levels)</td></tr>
+      <tr><td>isActive</td><td>Boolean</td><td>default:true</td></tr>
+      <tr><td>createdAt</td><td>Date</td><td>timestamps</td></tr>
+    </table>
+  </div>
+
+  <!-- PRODUCT -->
+  <div class="card">
+    <div class="card-header">Product <span class="card-sub">products</span></div>
+    <table>
+      <tr><td>_id</td><td>ObjectId</td><td><span class="tag tag-pk">PK</span></td></tr>
+      <tr><td>name</td><td>String</td><td><span class="tag-req">required</span></td></tr>
+      <tr><td>slug</td><td>String</td><td><span class="tag tag-uk">UK</span> auto</td></tr>
+      <tr><td>description</td><td>String</td><td><span class="tag-req">required</span></td></tr>
+      <tr><td>brand</td><td>ObjectId</td><td><span class="tag tag-fk">FK</span> Brand</td></tr>
+      <tr><td>category</td><td>ObjectId</td><td><span class="tag tag-fk">FK</span> Category</td></tr>
+      <tr><td>seller</td><td>ObjectId</td><td><span class="tag tag-fk">FK</span> Seller</td></tr>
+      <tr><td>variants[]</td><td>ObjectId[]</td><td><span class="tag tag-fk">FK</span> ProductVariant refs</td></tr>
+      <tr><td>startingPrice</td><td>Number</td><td>lowest variant price (denorm.)</td></tr>
+      <tr><td>status</td><td>String</td><td>draft|active|inactive|banned, default:draft</td></tr>
+      <tr><td>tags[]</td><td>String[]</td><td></td></tr>
+      <tr><td>seo</td><td>Embedded</td><td>metaTitle, metaDescription</td></tr>
+      <tr><td>avgRating</td><td>Number</td><td>0-5, default:0 (denorm.)</td></tr>
+      <tr><td>reviewCount</td><td>Number</td><td>default:0 (denorm.)</td></tr>
+      <tr><td>createdAt</td><td>Date</td><td>timestamps</td></tr>
+      <tr class="index-row"><td colspan="3"><span class="tag tag-idx">IDX</span> name+description+tags (text index for search)</td></tr>
+    </table>
+  </div>
+
+  <!-- PRODUCTVARIANT -->
+  <div class="card">
+    <div class="card-header">ProductVariant <span class="card-sub">productvariants</span></div>
+    <table>
+      <tr><td>_id</td><td>ObjectId</td><td><span class="tag tag-pk">PK</span></td></tr>
+      <tr><td>name</td><td>String</td><td><span class="tag-req">required</span> e.g. "128GB / Black"</td></tr>
+      <tr><td>skuCode</td><td>String</td><td><span class="tag tag-uk">UK</span> <span class="tag-req">required</span></td></tr>
+      <tr><td>productId</td><td>ObjectId</td><td><span class="tag tag-fk">FK</span> Product</td></tr>
+      <tr><td>attributes</td><td>Mixed</td><td>{ color:"Red", size:"XL" } — flexible</td></tr>
+      <tr><td>mrp</td><td>Number</td><td>min:0 <span class="tag-req">required</span></td></tr>
+      <tr><td>sellingPrice</td><td>Number</td><td>min:0 <span class="tag-req">required</span></td></tr>
+      <tr><td>images[]</td><td>String[]</td><td>variant-specific image URLs</td></tr>
+      <tr><td>isActive</td><td>Boolean</td><td>default:true</td></tr>
+      <tr><td>createdAt</td><td>Date</td><td>timestamps</td></tr>
+    </table>
+  </div>
+
+  <!-- WAREHOUSE -->
+  <div class="card">
+    <div class="card-header">Warehouse <span class="card-sub">warehouses</span></div>
+    <table>
+      <tr><td>_id</td><td>ObjectId</td><td><span class="tag tag-pk">PK</span></td></tr>
+      <tr><td>warehouseCode</td><td>String</td><td><span class="tag tag-uk">UK</span> e.g. WH-DEL-001</td></tr>
+      <tr><td>name</td><td>String</td><td><span class="tag-req">required</span></td></tr>
+      <tr><td>address</td><td>Embedded</td><td>street, city, state, pincode</td></tr>
+      <tr><td>isActive</td><td>Boolean</td><td>default:true</td></tr>
+      <tr><td>createdAt</td><td>Date</td><td>timestamps</td></tr>
+    </table>
+  </div>
+
+  <!-- SUPPLIER -->
+  <div class="card">
+    <div class="card-header">Supplier <span class="card-sub">suppliers</span></div>
+    <table>
+      <tr><td>_id</td><td>ObjectId</td><td><span class="tag tag-pk">PK</span></td></tr>
+      <tr><td>companyName</td><td>String</td><td><span class="tag-req">required</span></td></tr>
+      <tr><td>contactName</td><td>String</td><td><span class="tag-req">required</span></td></tr>
+      <tr><td>email</td><td>String</td><td><span class="tag tag-uk">UK</span></td></tr>
+      <tr><td>phone</td><td>String</td><td></td></tr>
+      <tr><td>address[]</td><td>Embedded[]</td><td>street, city, state, pincode</td></tr>
+      <tr><td>products[]</td><td>ObjectId[]</td><td><span class="tag tag-fk">FK</span> ProductVariant refs</td></tr>
+      <tr><td>isActive</td><td>Boolean</td><td>default:true</td></tr>
+      <tr><td>createdAt</td><td>Date</td><td>timestamps</td></tr>
+    </table>
+  </div>
+
+  <!-- ORDER -->
+  <div class="card">
+    <div class="card-header">Order <span class="card-sub">orders</span></div>
+    <table>
+      <tr><td>_id</td><td>ObjectId</td><td><span class="tag tag-pk">PK</span></td></tr>
+      <tr><td>customerId</td><td>ObjectId</td><td><span class="tag tag-fk">FK</span> Customer</td></tr>
+      <tr><td>customerName</td><td>String</td><td>snapshot at order time</td></tr>
+      <tr><td>customerEmail</td><td>String</td><td>snapshot at order time</td></tr>
+      <tr><td>items[]</td><td>Embedded[]</td><td>_id:false — variantId(FK), productName, variant(Mixed), quantity, mrp, sellingPrice, totalPrice</td></tr>
+      <tr><td>totalMrp</td><td>Number</td><td><span class="tag-req">required</span></td></tr>
+      <tr><td>totalDiscount</td><td>Number</td><td>default:0</td></tr>
+      <tr><td>totalAmount</td><td>Number</td><td><span class="tag-req">required</span> (what customer paid)</td></tr>
+      <tr><td>shippingAddress</td><td>Embedded</td><td>_id:false — snapshot, street, city, state, pincode</td></tr>
+      <tr><td>status</td><td>String</td><td>pending|confirmed|processing|shipped|out_for_delivery|delivered|cancelled|return_requested|returned, default:pending</td></tr>
+      <tr><td>statusHistory[]</td><td>Embedded[]</td><td>_id:false — status(enum), createdAt(default:now)</td></tr>
+      <tr><td>createdAt</td><td>Date</td><td>timestamps</td></tr>
+    </table>
+  </div>
+
+  <!-- REVIEW -->
+  <div class="card">
+    <div class="card-header">Review <span class="card-sub">reviews</span></div>
+    <table>
+      <tr><td>_id</td><td>ObjectId</td><td><span class="tag tag-pk">PK</span></td></tr>
+      <tr><td>customerId</td><td>ObjectId</td><td><span class="tag tag-fk">FK</span> Customer</td></tr>
+      <tr><td>variantId</td><td>ObjectId</td><td><span class="tag tag-fk">FK</span> ProductVariant</td></tr>
+      <tr><td>orderId</td><td>ObjectId</td><td><span class="tag tag-fk">FK</span> Order (verify purchase)</td></tr>
+      <tr><td>rating</td><td>Number</td><td><span class="tag-req">required</span> min:1 max:5</td></tr>
+      <tr><td>title</td><td>String</td><td>optional</td></tr>
+      <tr><td>body</td><td>String</td><td>optional</td></tr>
+      <tr><td>images[]</td><td>String[]</td><td></td></tr>
+      <tr><td>isVerified</td><td>Boolean</td><td>default:false — set true after order check</td></tr>
+      <tr><td>isVisible</td><td>Boolean</td><td>default:true (moderation flag)</td></tr>
+      <tr><td>createdAt</td><td>Date</td><td>timestamps</td></tr>
+      <tr class="index-row"><td colspan="3"><span class="tag tag-idx">IDX</span> (customerId + variantId) unique — one review per customer per variant</td></tr>
+    </table>
+  </div>
+
+  <!-- INVENTORYITEM -->
+  <div class="card">
+    <div class="card-header">InventoryItem <span class="card-sub">inventoryitems</span></div>
+    <table>
+      <tr><td>_id</td><td>ObjectId</td><td><span class="tag tag-pk">PK</span></td></tr>
+      <tr><td>productVariantId</td><td>ObjectId</td><td><span class="tag tag-fk">FK</span> ProductVariant</td></tr>
+      <tr><td>warehouseId</td><td>ObjectId</td><td><span class="tag tag-fk">FK</span> Warehouse</td></tr>
+      <tr><td>quantityAvailable</td><td>Number</td><td><span class="tag-req">required</span> min:0</td></tr>
+      <tr><td>quantityReserved</td><td>Number</td><td>default:0 min:0 — placed, not shipped</td></tr>
+      <tr><td>quantityDamaged</td><td>Number</td><td>default:0 min:0</td></tr>
+      <tr><td>reorderLevel</td><td>Number</td><td><span class="tag-req">required</span> — trigger restock alert below this</td></tr>
+      <tr><td>createdAt</td><td>Date</td><td>timestamps</td></tr>
+      <tr class="index-row"><td colspan="3"><span class="tag tag-idx">IDX</span> (productVariantId + warehouseId) unique — one record per variant per warehouse</td></tr>
+    </table>
+  </div>
+
+</div><!-- end grid -->
+
+<footer>
+  The Backend Mastery &nbsp;·&nbsp; feature/mongoose branch &nbsp;·&nbsp; Phase 1 complete &nbsp;·&nbsp; 12 collections
+</footer>
+
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral', er: { layoutDirection: 'LR' } });
+</script>
+</body>
+</html>

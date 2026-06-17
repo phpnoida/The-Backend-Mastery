@@ -9,7 +9,8 @@
     "prestart": "npm run build",
     "start": "node dist/server.js",
     "build": "rimraf dist && esbuild src/server.ts --bundle --platform=node --format=esm --packages=external --alias:@modules=./src/modules --alias:@config=./src/config --alias:@middlewares=./src/middlewares --alias:@utils=./src/utils --alias:@types=./src/types --alias:@lib=./src/lib --outdir=dist",
-    "dev": "NODE_ENV=development nodemon --watch src --ext ts --exec \"npm run build && node dist/server.js\""
+    "dev": "NODE_ENV=development nodemon --watch src --ext ts --exec \"npm run build && node dist/server.js\"",
+    "seed": "NODE_ENV=development npx tsx src/seed/seed.ts"
   },
   "keywords": [
     "nodejs",
@@ -40,6 +41,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@faker-js/faker": "^9.9.0",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
     "@types/jsonwebtoken": "^9.0.10",
