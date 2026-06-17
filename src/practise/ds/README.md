@@ -1,7 +1,9 @@
 # 🧠 JavaScript DS Drills — the logic that goes into your services
 
-~100 bite-sized JavaScript exercises on the fundamentals you reach for **every time you write API
-logic**: objects, arrays, strings, functions, operators, conditionals, typecasting, loops, maths.
+**270 JavaScript exercises** (30 per topic) on the fundamentals you reach for **every time you write
+API logic**: objects, arrays, strings, functions, operators, conditionals, typecasting, loops, maths.
+
+Each file is split into **Simple → Medium → Tough** (10 each), so you can warm up and then push.
 
 These are the building blocks that live inside your **service** files (business logic). No APIs, no
 server — just you, the data, and the output.
@@ -45,18 +47,18 @@ const q03Users = [ /* ...dataset... */ ];
 
 | File | Topic | Count |
 |------|-------|:---:|
-| `01-objects.js` | Objects — access, transform, merge, count | 12 |
-| `02-arrays.js` | Arrays — map/filter/reduce, sort, group, paginate | 18 |
-| `03-strings.js` | Strings — case, slugify, mask, parse | 12 |
-| `04-functions.js` | Functions — pure, HOF, closure, compose | 10 |
-| `05-operators.js` | Operators — spread, `?.`, `??`, short-circuit | 10 |
-| `06-conditionals.js` | Conditionals — if/switch, guard clauses | 8 |
-| `07-typecasting.js` | Typecasting — Number/String/Boolean, coercion | 10 |
-| `08-loops.js` | Loops — for/of/in, while, build-in-loop | 10 |
-| `09-maths.js` | Maths — round, random, %, pagination math | 10 |
+| `01-objects.js` | Objects — access, transform, merge, group, normalize | 30 |
+| `02-arrays.js` | Arrays — map/filter/reduce, sort, group, paginate, dedupe | 30 |
+| `03-strings.js` | Strings — case, slugify, mask, parse, camel/snake | 30 |
+| `04-functions.js` | Functions — pure, HOF, closure, compose, async/Promise | 30 |
+| `05-operators.js` | Operators — spread, `?.`, `??`, destructuring, conditional-spread | 30 |
+| `06-conditionals.js` | Conditionals — if/switch, guard clauses, validation, lookup tables | 30 |
+| `07-typecasting.js` | Typecasting — Number/String/Boolean, coercion, sanitizing bodies | 30 |
+| `08-loops.js` | Loops — for/of/in, while, build-in-loop, for-await | 30 |
+| `09-maths.js` | Maths — round, random, %, money, pagination/stats | 30 |
 
-Work top-to-bottom in each file — they ramp easy → harder, ending in a couple of "mini real-world"
-combos (the kind of transform you'd actually write in an endpoint).
+Work top-to-bottom in each file. Each is divided into **Simple → Medium → Tough** (10 each); the
+tough tier is "mini real-world" — the kind of transform you'd actually write in an endpoint.
 
 When you've attempted a file, ping me to **review your answers** (I'll check correctness *and*
 whether the approach is idiomatic/clean) — or ask for a targeted hint on a single question.

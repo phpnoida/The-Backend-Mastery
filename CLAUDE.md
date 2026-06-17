@@ -52,10 +52,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Topic:** JavaScript fundamentals / data-structure drills — the language logic that goes *into*
   service files (objects, arrays, strings, functions, operators, conditionals, typecasting, loops,
   maths). Goal: fluency in the moves used constantly while writing API logic. No APIs, no server.
-- **Deliverables created (by Claude):** ~100 spec-only practice questions under
+- **Deliverables created (by Claude):** 270 spec-only practice questions under
   [`src/practise/ds/`](src/practise/ds/) — one `.js` file per topic (`01-objects.js` …
-  `09-maths.js`) plus [`README.md`](src/practise/ds/README.md). Each question gives a task, an
-  API-flavored dataset `const`, and an **Expected** output (the self-check). **No solution code.**
+  `09-maths.js`), **30 questions each, split Simple → Medium → Tough (10/10/10)**, plus
+  [`README.md`](src/practise/ds/README.md). Each question gives a task, an API-flavored dataset
+  `const`, and an **Expected** output (the self-check). **No solution code.**
 - **How Amit practices:** writes answers inline and runs them live with the **Quokka.js** VSCode
   extension (`console.log` → inline output), comparing to `Expected`. Plain `.js` so `tsc --noEmit`
   ignores them (tsconfig only includes `src/**/*.ts`).
