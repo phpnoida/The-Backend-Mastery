@@ -1,288 +1,348 @@
-# Node.js TypeScript Backend — Boilerplate Setup Guide
+# Request Validation with Zod — Type-Safe API Boundaries
 
-This branch is the **base boilerplate** for all skill branches in this repo. Every new `feature/*` branch forks from here so you never write this setup from scratch again.
+This branch (`feature/validation-zod-datastructure`) demonstrates the **production pattern for
+validating incoming HTTP requests** with [Zod](https://zod.dev) on top of the Express 5 + TypeScript
+boilerplate.
 
-Stack: **Node.js + TypeScript + Express 5 + esbuild + Zod + ESM**
+The core idea: **one Zod schema per resource is the single source of truth** — it validates data at
+runtime *and* generates the TypeScript types (DTOs) your controllers and services consume. No
+duplicate `interface` definitions, no untyped `req.body`, no validation logic scattered across
+controllers.
 
----
-
-## Folder Structure
-
-```
-project-root/
-├── src/
-│   ├── server.ts              # Entry point — starts HTTP server, handles process errors
-│   ├── app.ts                 # Express app — middleware, routes
-│   ├── config/
-│   │   ├── env.ts             # All env vars in one place (source of truth)
-│   │   ├── mongoose.ts        # MongoDB connection (stub)
-│   │   ├── redis.ts           # Redis client (stub)
-│   │   ├── socket.ts          # Socket.IO setup (stub)
-│   │   └── dynamodb.ts        # DynamoDB client (stub)
-│   ├── middlewares/
-│   │   ├── globalErrorHandler.ts   # Centralized Express error handler
-│   │   ├── requireSignIn.ts        # JWT auth middleware (stub)
-│   │   └── validateRequest.ts      # Zod validation middleware (stub)
-│   ├── modules/
-│   │   └── <feature>/         # One folder per domain
-│   │       ├── <feature>.route.ts
-│   │       ├── <feature>.controller.ts
-│   │       ├── <feature>.service.ts
-│   │       ├── <feature>.model.ts
-│   │       ├── <feature>.schema.ts
-│   │       └── <feature>.test.ts
-│   ├── types/
-│   │   └── express.ts         # Typed request helpers (TypedRequestBody etc.)
-│   ├── utils/
-│   │   ├── AppError.ts        # Custom error class
-│   │   └── catchAsync.ts      # Async controller wrapper
-│   └── lib/                   # Third-party wrappers / shared logic
-├── dist/                      # Build output (gitignored)
-├── .env.example           # Committed — template with all keys, fake values
-├── .env.development       # Gitignored — your local dev values
-├── package.json
-└── tsconfig.json
-```
+Stack: `zod@4` · `express@5` · `typescript@6` (strict)
 
 ---
 
-## Step-by-Step Setup from Scratch
+## The Validation Flow
 
-### Step 1 — Init project
-
-```bash
-mkdir my-project && cd my-project
-npm init -y
-npm pkg set type=module
+```
+            ┌─────────────────────────── route layer ───────────────────────────┐
+HTTP request ──▶ validateRequest(schema, "body" | "query" | "params")
+                        │
+                        ├─ schema.safeParse(req[source])
+                        │
+              fail ◀────┤────▶ ok
+                │              │
+   next(new AppError(400)) │  req[source] = parsed (coerced + defaults applied)
+                │              │
+                ▼              ▼
+        globalErrorHandler   typed controller (req.body/params/query fully typed)
 ```
 
-### Step 2 — Install production dependencies
+Validation happens **at the edge** — before any controller or service runs. By the time your
+business logic executes, the data is already shape-checked, coerced, and typed.
 
-```bash
-npm install express mongoose cors helmet morgan xss-clean jsonwebtoken zod dotenv winston
+---
+
+## Step 1 — Write the schema (`user.schema.ts`)
+
+Define one schema per request shape: **create**, **update**, **query**, **params**.
+
+```ts
+import { z } from "zod";
+
+// POST body — creating a user
+const userCreateSchema = z.object({
+  fName: z.string().min(2).max(50),
+  lName: z.string().min(2).max(50).optional(),
+  email: z.email(),                                    // ① v4 top-level validator
+  phone: z.string().regex(/^\d{10}$/, "phone must be exactly 10 digits"), // ② string, not number
+});
+
+// PATCH body — every field optional, derived from create (DRY)
+const userUpdateSchema = userCreateSchema.partial();
+
+// GET ?page=&limit=&sort=&sortBy= — query values always arrive as strings
+const userQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),     // ③ coerce "2" → 2
+  limit: z.coerce.number().int().min(1).max(100).default(10),
+  sort: z.enum(["asc", "desc"]).default("asc"),
+  sortBy: z.enum(["fName", "lName", "email", "phone"]).default("fName"),
+});
+
+// :_id route param — Mongo ObjectId (24 hex chars)
+const userParamsSchema = z.object({
+  _id: z.string().regex(/^[a-f\d]{24}$/i, "invalid id"), // ④ stricter than .length(24)
+});
 ```
 
-### Step 3 — Install dev dependencies
+### Why these differ from the "first draft"
 
-```bash
-npm install -D typescript @types/node @types/express @types/cors @types/morgan @types/jsonwebtoken esbuild rimraf nodemon ts-node concurrently
+| # | Common mistake | Why it's wrong | Fix |
+|---|----------------|----------------|-----|
+| ① | `z.string().email()` | Deprecated in Zod **v4** | `z.email()` (top-level) |
+| ② | `z.coerce.number().min(10).max(10)` for phone | On a *number*, `.min/.max` bound the **value**, not the digit count — this only accepts the number `10` | `z.string().regex(/^\d{10}$/)` |
+| ③ | `z.number()` for `page`/`limit` | Query params are **strings** (`?page=2` → `"2"`), so a plain number schema always fails | `z.coerce.number()` |
+| ④ | `z.string().min(24).max(24)` | Accepts any 24-char string, including non-hex | `.regex(/^[a-f\d]{24}$/i)` |
+
+> `.min(24).max(24)` on a **string** *does* check length (string `.min/.max` = length), so it wasn't
+> broken — but a regex actually validates the ObjectId format. On a **number** the same methods mean
+> something completely different. Know which type you're constraining.
+
+---
+
+## Step 2 — Infer the DTOs
+
+Don't hand-write interfaces. Derive the types straight from the schemas with `z.infer` so they can
+**never drift** out of sync with validation.
+
+```ts
+type UserCreateDto = z.infer<typeof userCreateSchema>;
+type UserUpdateDto = z.infer<typeof userUpdateSchema>;
+type UserQueryDto = z.infer<typeof userQuerySchema>;
+type UserParamsDto = z.infer<typeof userParamsSchema>;
+
+export {
+  userCreateSchema,
+  userUpdateSchema,
+  userQuerySchema,
+  userParamsSchema,
+  type UserCreateDto,
+  type UserUpdateDto,
+  type UserQueryDto,
+  type UserParamsDto,
+};
 ```
 
-### Step 4 — Create `tsconfig.json`
+`UserQueryDto.page` is typed as `number` (the **output** type, after coercion + defaults), even
+though the wire value was a string. `z.infer` always gives you the parsed shape — exactly what your
+controller receives.
 
-```json
-{
-  "compilerOptions": {
-    "rootDir": "./src",
-    "outDir": "./dist",
-    "module": "es2022",
-    "target": "es2022",
-    "lib": ["es2022"],
-    "types": ["node"],
-    "moduleResolution": "bundler",
-    "verbatimModuleSyntax": true,
-    "sourceMap": true,
-    "declaration": false,
-    "declarationMap": false,
-    "noUncheckedIndexedAccess": true,
-    "exactOptionalPropertyTypes": true,
-    "noImplicitReturns": true,
-    "noImplicitOverride": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true,
-    "noPropertyAccessFromIndexSignature": true,
-    "strict": true,
-    "isolatedModules": true,
-    "noUncheckedSideEffectImports": true,
-    "moduleDetection": "force",
-    "skipLibCheck": true,
-    "experimentalDecorators": true,
-    "emitDecoratorMetadata": true,
-    "allowSyntheticDefaultImports": true,
-    "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true,
-    "resolveJsonModule": true,
-    "ignoreDeprecations": "6.0",
-    "baseUrl": ".",
-    "paths": {
-      "@modules/*": ["src/modules/*"],
-      "@config/*":  ["src/config/*"],
-      "@middlewares/*": ["src/middlewares/*"],
-      "@utils/*":   ["src/utils/*"],
-      "@types/*":   ["src/types/*"],
-      "@lib/*":     ["src/lib/*"]
+---
+
+## Step 3 — The `validateRequest` middleware
+
+A single reusable middleware factory: pass it a schema and which part of the request to validate.
+
+```ts
+// src/middlewares/validateRequest.ts
+import { type ZodType } from "zod";
+import { type Request, type Response, type NextFunction } from "express";
+import AppError from "@utils/AppError";
+
+type RequestSource = "body" | "query" | "params";
+
+const validateRequest =
+  (schema: ZodType, source: RequestSource = "body") =>
+  (req: Request, _res: Response, next: NextFunction) => {
+    const result = schema.safeParse(req[source]);
+
+    if (!result.success) {
+      const message = result.error.issues
+        .map((issue) => `${issue.path.join(".") || source}: ${issue.message}`)
+        .join("; ");
+      return next(new AppError(message, 400));
     }
-  },
-  "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist"]
-}
+
+    // Express 5: req.query / req.params are GETTER-ONLY — `req.query = ...` throws.
+    // defineProperty shadows the getter with the parsed (coerced + defaulted) value
+    // so downstream controllers see the clean data, not the raw strings.
+    Object.defineProperty(req, source, {
+      value: result.data,
+      writable: true,
+      configurable: true,
+    });
+
+    next();
+  };
+
+export default validateRequest;
 ```
 
-### Step 5 — Configure `package.json` scripts
+### Why it's written this way
 
-```json
-{
-  "main": "dist/server.js",
-  "type": "module",
-  "scripts": {
-    "build": "rimraf dist && esbuild src/server.ts --bundle --platform=node --format=esm --packages=external --alias:@modules=./src/modules --alias:@config=./src/config --alias:@middlewares=./src/middlewares --alias:@utils=./src/utils --alias:@types=./src/types --alias:@lib=./src/lib --outdir=dist",
-    "start": "node dist/server.js",
-    "prestart": "npm run build",
-    "dev": "nodemon --watch src --ext ts --exec \"npm run build && node dist/server.js\"",
-    "typecheck": "tsc --noEmit"
+- **`safeParse`, not `parse`** — `parse` *throws* a `ZodError`. `safeParse` returns a discriminated
+  `{ success, data | error }` result, so we control how the error becomes an `AppError`. No `try/catch`.
+- **Re-assigning `req[source]`** — this is the step most tutorials forget. After coercion (`"2"` → `2`)
+  and defaults (`limit` → `10`), the **parsed** data only exists in `result.data`. If you don't write
+  it back, the controller still reads the raw, uncoerced request.
+- **`Object.defineProperty` instead of `req.query = result.data`** — ⚠️ **Express 5 changed `req.query`
+  and `req.params` into read-only getters.** Direct assignment throws `Cannot set property query of
+  #<IncomingMessage> which has only a getter`. `defineProperty` installs an own property on the
+  request that shadows the prototype getter. This is the #1 Express-4-to-5 validation bug — most
+  blog posts predate Express 5 and use the broken assignment.
+- **`_res`** — unused, prefixed with `_` to satisfy `noUnusedParameters` (on in this repo's tsconfig).
+
+> **Level-up (production APIs):** clients usually want a structured `errors[]`, not one joined string.
+> Extend `AppError` to carry a `details` field and pass `z.flattenError(result.error).fieldErrors`
+> into it, then surface that in `globalErrorHandler`. Kept simple here so the flow stays readable.
+
+---
+
+## Step 4 — Typed controllers (`user.controller.ts`)
+
+The repo already ships request-type helpers in [`src/types/express.ts`](src/types/express.ts) —
+reuse them instead of writing `Request<{}, {}, Body>` generics by hand:
+
+```ts
+export type TypedRequestBody<T>   = Request<{}, {}, T>;
+export type TypedRequestParams<T> = Request<T>;
+export type TypedRequestQuery<T>  = Request<{}, {}, {}, T>;
+export type TypedRequest<TParams, TBody, TQuery> = Request<TParams, {}, TBody, TQuery>;
+```
+
+Wire the DTOs in. Every handler stays wrapped in `catchAsync` so thrown/rejected errors reach the
+global handler automatically:
+
+```ts
+import { type Response } from "express";
+import catchAsync from "@utils/catchAsync";
+import {
+  type TypedRequestBody,
+  type TypedRequestParams,
+  type TypedRequestQuery,
+  type TypedRequest,
+} from "@types/express";
+import {
+  type UserCreateDto,
+  type UserUpdateDto,
+  type UserQueryDto,
+  type UserParamsDto,
+} from "./user.schema";
+
+// req.body : UserCreateDto
+export const createUser = catchAsync(
+  async (req: TypedRequestBody<UserCreateDto>, res: Response) => {
+    res.status(201).json({ status: "success", data: req.body });
   }
-}
+);
+
+// req.query : UserQueryDto  (page/limit are already numbers here)
+export const listUsers = catchAsync(
+  async (req: TypedRequestQuery<UserQueryDto>, res: Response) => {
+    res.status(200).json({ status: "success", query: req.query });
+  }
+);
+
+// req.params : UserParamsDto, req.body : UserUpdateDto
+export const updateUser = catchAsync(
+  async (req: TypedRequest<UserParamsDto, UserUpdateDto, {}>, res: Response) => {
+    res.status(200).json({ status: "success", id: req.params._id, data: req.body });
+  }
+);
+
+// req.params : UserParamsDto
+export const deleteUser = catchAsync(
+  async (req: TypedRequestParams<UserParamsDto>, res: Response) => {
+    res.status(204).json({ status: "success", id: req.params._id });
+  }
+);
 ```
 
-### Step 6 — Set up environment files
+Inside each handler, `req.body`, `req.params`, and `req.query` are fully typed and autocompleted —
+no casts, no `as`. The validation at the route guarantees the runtime shape matches the type.
 
-**Professional pattern — never commit real env values:**
+---
 
-| File | Committed? | Purpose |
-|------|-----------|---------|
-| `.env.example` | **Yes** | Template with all keys, fake values — tells new devs what vars are needed |
-| `.env.development` | No | Local dev values |
-| `.env.staging` | No | Staging server values |
-| `.env.production` | No | Production values (usually set by platform dashboard, not a file) |
+## Step 5 — Wire validation into routes (`user.route.ts`)
 
-`.gitignore` pattern:
+`validateRequest` runs **before** the controller. Validate multiple sources by chaining it — e.g.
+an update needs both the `:_id` param *and* the body checked:
+
+```ts
+import { Router } from "express";
+import validateRequest from "@middlewares/validateRequest";
+import {
+  userCreateSchema,
+  userUpdateSchema,
+  userQuerySchema,
+  userParamsSchema,
+} from "./user.schema";
+import { createUser, listUsers, updateUser, deleteUser } from "./user.controller";
+
+const router = Router();
+
+router
+  .route("/users")
+  .post(validateRequest(userCreateSchema), createUser)          // defaults to "body"
+  .get(validateRequest(userQuerySchema, "query"), listUsers);
+
+router
+  .route("/users/:_id")
+  .patch(
+    validateRequest(userParamsSchema, "params"),                // ① check the id
+    validateRequest(userUpdateSchema),                          // ② then the body
+    updateUser
+  )
+  .delete(validateRequest(userParamsSchema, "params"), deleteUser);
+
+export default router;
 ```
-.env
-.env.*
-!.env.example
+
+The router is mounted under `/api/v1` in [`src/app.ts`](src/app.ts), so the full paths are
+`/api/v1/users` and `/api/v1/users/:_id`.
+
+---
+
+## Error Handling — how a bad request becomes a clean 400
+
+The pieces already in the boilerplate connect into one pipeline:
+
 ```
-The `!` un-ignores `.env.example` so it **is** committed despite the `.*` rule.
-
-**`NODE_ENV` is never set inside a `.env` file.** It must be set before the process starts — otherwise dotenv can't know which file to load (chicken-and-egg). Set it in the npm script for dev; let the deployment platform (Heroku, Railway, AWS, Render) set it for production.
-
-```json
-"scripts": {
-  "dev":   "NODE_ENV=development nodemon ...",
-  "start": "node dist/server.js"
-}
+schema.safeParse fails
+  → validateRequest calls next(new AppError(message, 400))   // isOperational: true
+    → globalErrorHandler (src/middlewares/globalErrorHandler.ts)
+        ├─ development : full message + stack + error object
+        └─ production  : { status: "fail", message }   (operational errors only)
 ```
 
-> **Cross-platform note:** `NODE_ENV=x` in scripts works on Linux/Mac but fails on Windows. The fix is `npm install -D cross-env` and prefix scripts with `cross-env NODE_ENV=development`.
+Because `AppError` sets `isOperational: true`, the validation message **is** exposed to the client in
+production (it's a 4xx the caller can act on). Unexpected 5xx errors stay hidden behind a generic
+"Something went wrong!" — see [`globalErrorHandler.ts`](src/middlewares/globalErrorHandler.ts).
 
-**Onboarding a new developer:**
+---
+
+## Best-Practice Checklist
+
+- ✅ **Validate at the edge** — in middleware, before controllers. Controllers assume valid input.
+- ✅ **One schema = source of truth** — runtime validation *and* the TS type (`z.infer`). Never both.
+- ✅ **Coerce query & params** — they're always strings on the wire; use `z.coerce.*` + `.default()`.
+- ✅ **Write the parsed data back** to `req[source]`, or coercion/defaults are silently lost.
+- ⚠️ **Express 5: `req.query`/`req.params` are getter-only** — use `Object.defineProperty`, never `=`.
+- ✅ **`safeParse` over `parse`** in middleware — turn the result into an `AppError`, skip `try/catch`.
+- ✅ **`.partial()` for updates** — derive the update schema from create; don't duplicate fields.
+- ✅ **`import type` for type-only imports** — required by `verbatimModuleSyntax` in this tsconfig.
+- ✅ **Prefix unused params with `_`** — `noUnusedParameters` is on (e.g. `_res`).
+
+---
+
+## Try It
+
 ```bash
-cp .env.example .env.development
-# fill in real values
 npm run dev
 ```
 
-### Step 7 — Create `src/config/env.ts`
-
-Single source of truth for all environment variables. Add every new env var here — never read `process.env` directly anywhere else in the codebase.
-
-Loads the right file based on `NODE_ENV`:
-
-```ts
-import dotenv from "dotenv";
-
-const nodeEnv = process.env["NODE_ENV"] ?? "development";
-dotenv.config({ path: `.env.${nodeEnv}` });
-
-const ENV = {
-  NODE_ENV: nodeEnv,
-  PORT: process.env["PORT"] ?? 6001,
-} as const;
-
-export default ENV;
-```
-
-### Step 8 — Create `src/server.ts`
-
-Responsibilities:
-- Create the HTTP server (`createServer(app)`)
-- Start listening on the port from `env.ts`
-- Register `uncaughtException` handler **before** anything else (sync errors)
-- Register `unhandledRejection` handler **after** `startServer()` (async errors — graceful shutdown)
-
-### Step 9 — Create `src/app.ts`
-
-Responsibilities:
-- Create the Express app
-- Apply global middleware (`express.json`, `cors`, `helmet`, `morgan`)
-- Mount module routers under `/api/v1`
-- Mount `globalErrorHandler` **last** (Express requires 4-arg error handlers to be at the end)
-
-### Step 10 — Create utilities
-
-**`src/utils/AppError.ts`** — extend `Error` with `statusCode`, `status`, and `isOperational: true`. Only operational errors are exposed to the client in production.
-
-**`src/utils/catchAsync.ts`** — wraps async route handlers. Without this, any `async` controller that throws will hang the request. All controllers must use it.
-
-### Step 11 — Create `src/middlewares/globalErrorHandler.ts`
-
-- In `development`: send full error + stack to client
-- In `production`: only send message if `err.isOperational === true`, otherwise send generic "Something went wrong"
-
-### Step 12 — Create `src/types/express.ts`
-
-Typed request helpers to avoid writing `Request<{}, {}, Body>` generics manually every time:
-- `TypedRequestBody<T>`
-- `TypedRequestParams<T>`
-- `TypedRequestQuery<T>`
-- `TypedRequest<TParams, TBody, TQuery>`
-
----
-
-## Key Concepts
-
-### Why esbuild instead of tsc?
-
-`tsc` compiles TypeScript but is slow and requires extra config for path aliases. `esbuild` is 10–100x faster and handles path alias rewriting natively via `--alias` flags. `tsc` is only used for type checking (`npm run typecheck`), not for producing output files.
-
-### Why `--packages=external`?
-
-Without this flag, esbuild bundles all `node_modules` into one file. This causes issues because:
-- Many npm packages (like Express) use CommonJS `require()` internally
-- Bundling them into ESM format breaks dynamic requires
-- Bundle size balloons to 1MB+
-
-With `--packages=external`, Node.js loads packages normally at runtime and only your source code is compiled.
-
-### Why path aliases need two places?
-
-| Where | Tool | Why |
-|-------|------|-----|
-| `tsconfig.json` → `paths` | TypeScript | IDE autocomplete, go-to-definition, type checking |
-| `package.json` → `--alias` | esbuild | Rewrites aliases in the compiled output at build time |
-
-They must be kept in sync. If you add a new alias in `tsconfig`, add the matching `--alias` flag to the build script.
-
-### Why `"type": "module"` in package.json?
-
-This makes Node.js treat all `.js` files as ESM. It requires esbuild to output `--format=esm`. The tradeoff is that CommonJS patterns (`require`, `__dirname`, `__filename`) don't work — use `import.meta.url` instead if needed.
-
-### Error Handling Flow
-
-```
-Async controller throws
-  → catchAsync forwards to next(err)
-    → globalErrorHandler receives it
-      → development: full error + stack
-      → production: operational errors only, generic message otherwise
-```
-
----
-
-## Commands
-
 ```bash
-npm run dev        # Watch mode — rebuilds and restarts on every src change
-npm run build      # One-time production build → dist/server.js
-npm start          # Builds then runs (for deployment)
-npm run typecheck  # Type check without building
+# ✅ valid create
+curl -X POST http://localhost:6001/api/v1/users \
+  -H "Content-Type: application/json" \
+  -d '{"fName":"Amit","email":"amit@example.com","phone":"9876543210"}'
+
+# ❌ bad email + 3-digit phone → 400 with field-level message
+curl -X POST http://localhost:6001/api/v1/users \
+  -H "Content-Type: application/json" \
+  -d '{"fName":"A","email":"not-an-email","phone":"123"}'
+# → { "status": "fail", "message": "fName: ...; email: ...; phone: phone must be exactly 10 digits" }
+
+# ✅ query coercion + defaults — omit params and watch them fill in
+curl "http://localhost:6001/api/v1/users?page=2"
+# → query: { page: 2, limit: 10, sort: "asc", sortBy: "fName" }
+
+# ❌ invalid ObjectId → 400
+curl -X DELETE http://localhost:6001/api/v1/users/123
 ```
 
 ---
 
-## Gotchas
+## File Map
 
-- **Express 5**: wildcard routes must be named — use `*splat` not `*`
-- **`baseUrl` deprecated in TS 6**: suppress with `"ignoreDeprecations": "6.0"` — still required for `paths` to work until TS 7 ships a replacement
-- **`noUnusedLocals` / `noUnusedParameters`**: these are on — prefix with `_` to suppress (e.g. `_req`, `_next`)
-- **`verbatimModuleSyntax`**: forces you to use `import type` for type-only imports — the compiler will error if you don't
+| File | Role |
+|------|------|
+| [`src/modules/users/user.schema.ts`](src/modules/users/user.schema.ts) | Zod schemas + inferred DTOs (source of truth) |
+| [`src/middlewares/validateRequest.ts`](src/middlewares/validateRequest.ts) | Reusable `validateRequest(schema, source)` factory |
+| [`src/modules/users/user.controller.ts`](src/modules/users/user.controller.ts) | Typed handlers via `TypedRequest*` |
+| [`src/modules/users/user.route.ts`](src/modules/users/user.route.ts) | Routes with validation chained in |
+| [`src/types/express.ts`](src/types/express.ts) | `TypedRequestBody` / `TypedRequestParams` / `TypedRequestQuery` / `TypedRequest` |
+| [`src/utils/AppError.ts`](src/utils/AppError.ts) | Operational error class (`isOperational: true`) |
+| [`src/utils/catchAsync.ts`](src/utils/catchAsync.ts) | Async wrapper — forwards errors to `next()` |
+| [`src/middlewares/globalErrorHandler.ts`](src/middlewares/globalErrorHandler.ts) | Dev/prod error formatting |
