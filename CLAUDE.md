@@ -47,7 +47,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 > you already know the branch's intent, deliverables, and what "correct" looks like. One entry per
 > branch; newest active branch first. Carry this section forward when forking a new branch from base.
 
-### `feature/validation-zod-datastructure` — **active**
+### `feature/data-structure` — **active**
+
+- **Topic:** JavaScript fundamentals / data-structure drills — the language logic that goes *into*
+  service files (objects, arrays, strings, functions, operators, conditionals, typecasting, loops,
+  maths). Goal: fluency in the moves used constantly while writing API logic. No APIs, no server.
+- **Deliverables created (by Claude):** ~100 spec-only practice questions under
+  [`src/practise/ds/`](src/practise/ds/) — one `.js` file per topic (`01-objects.js` …
+  `09-maths.js`) plus [`README.md`](src/practise/ds/README.md). Each question gives a task, an
+  API-flavored dataset `const`, and an **Expected** output (the self-check). **No solution code.**
+- **How Amit practices:** writes answers inline and runs them live with the **Quokka.js** VSCode
+  extension (`console.log` → inline output), comparing to `Expected`. Plain `.js` so `tsc --noEmit`
+  ignores them (tsconfig only includes `src/**/*.ts`).
+- **When reviewing his answers:** check (1) output matches `Expected`, and (2) the approach is
+  idiomatic/clean (prefer `map/filter/reduce`, `Object.entries`, `??`/`?.`, guard clauses, etc.).
+  Give hints, not full solutions, unless he asks. A separate answer key can be added on request.
+- **Status:** Question set issued — awaiting Amit's attempts, then review.
+
+### `feature/validation-zod-datastructure`
 
 - **Topic:** Request validation with Zod (schema → inferred DTO → `validateRequest` middleware →
   typed controller → route), on Express 5 + MongoDB.
