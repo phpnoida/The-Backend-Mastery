@@ -39,6 +39,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
+## Branch Working Log
+
+> **Maintenance rule (for Claude):** Keep this log current. When work starts or finishes on a
+> branch — a README is written, an exercise is issued, a solution is reviewed — update that
+> branch's entry here. This is the context to load **before reviewing Amit's solution code** so
+> you already know the branch's intent, deliverables, and what "correct" looks like. One entry per
+> branch; newest active branch first. Carry this section forward when forking a new branch from base.
+
+### `feature/validation-zod-datastructure` — **active**
+
+- **Topic:** Request validation with Zod (schema → inferred DTO → `validateRequest` middleware →
+  typed controller → route), on Express 5 + MongoDB.
+- **Deliverables created (by Claude):**
+  - Root [`README.md`](README.md) — the teaching reference for the Zod validation pattern, using a
+    `user` resource. Includes the corrected best-practice code (string+regex phone, Express 5
+    `req.query` getter gotcha, Zod v4 `z.email()`/`z.coerce`/`z.flattenError`).
+  - [`src/practise/EXERCISE.md`](src/practise/EXERCISE.md) — a **spec-only** practice brief
+    (no solution code) for Amit to implement himself.
+- **What Amit is implementing himself** (Product inventory API, all under `src/practise/`):
+  `product.model.ts`, `product.schema.ts`, `product.service.ts`, `product.controller.ts`,
+  `product.route.ts` — plus infra: implement `src/middlewares/validateRequest.ts`, add `MONGO_URI`
+  to `src/config/env.ts`, wire `src/config/mongoose.ts`, connect DB in `src/server.ts`, mount the
+  router in `src/app.ts`.
+- **When reviewing his solution, check against:** the field spec + the 4 (+1 bonus) endpoint
+  contracts + the self-check rubric in [`EXERCISE.md`](src/practise/EXERCISE.md) §1–§6. Key points:
+  validation runs at the edge (bad input → 400 *before* controller), unknown id → 404 (not 500),
+  query numbers coerced + defaulted, `validateRequest` uses `Object.defineProperty` (Express 5),
+  controllers use `TypedRequest*` + `catchAsync`, `npx tsc --noEmit` clean.
+- **Status:** Exercise issued — awaiting Amit's implementation, then review.
+
+---
+
 ## Commands
 
 ```bash
