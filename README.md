@@ -171,28 +171,13 @@ export default validateRequest;
 
 ## Step 4 — Typed controllers (`user.controller.ts`)
 
-The repo already ships request-type helpers in [`src/types/express.ts`](src/types/express.ts) —
-reuse them instead of writing `Request<{}, {}, Body>` generics by hand:
+Use plain `Request`/`Response` from Express. Zod already validated the request at the route (Step 5),
+so inside the controller you read the data and bind the **inferred DTO** with an `as` cast. Every
+handler stays wrapped in `catchAsync` so thrown/rejected errors reach the global handler.
 
 ```ts
-export type TypedRequestBody<T>   = Request<{}, {}, T>;
-export type TypedRequestParams<T> = Request<T>;
-export type TypedRequestQuery<T>  = Request<{}, {}, {}, T>;
-export type TypedRequest<TParams, TBody, TQuery> = Request<TParams, {}, TBody, TQuery>;
-```
-
-Wire the DTOs in. Every handler stays wrapped in `catchAsync` so thrown/rejected errors reach the
-global handler automatically:
-
-```ts
-import { type Response } from "express";
+import { type Request, type Response } from "express";
 import catchAsync from "@utils/catchAsync";
-import {
-  type TypedRequestBody,
-  type TypedRequestParams,
-  type TypedRequestQuery,
-  type TypedRequest,
-} from "@types/express";
 import {
   type UserCreateDto,
   type UserUpdateDto,
@@ -200,37 +185,57 @@ import {
   type UserParamsDto,
 } from "./user.schema";
 
-// req.body : UserCreateDto
-export const createUser = catchAsync(
-  async (req: TypedRequestBody<UserCreateDto>, res: Response) => {
-    res.status(201).json({ status: "success", data: req.body });
-  }
-);
+// body validated upstream → bind the DTO
+export const createUser = catchAsync(async (req: Request, res: Response) => {
+  const body = req.body as UserCreateDto;
+  res.status(201).json({ status: "success", data: body });
+});
 
-// req.query : UserQueryDto  (page/limit are already numbers here)
-export const listUsers = catchAsync(
-  async (req: TypedRequestQuery<UserQueryDto>, res: Response) => {
-    res.status(200).json({ status: "success", query: req.query });
-  }
-);
+// query values are coerced (page/limit are numbers here) — see the ParsedQs note below
+export const listUsers = catchAsync(async (req: Request, res: Response) => {
+  const query = req.query as unknown as UserQueryDto;
+  res.status(200).json({ status: "success", query });
+});
 
-// req.params : UserParamsDto, req.body : UserUpdateDto
-export const updateUser = catchAsync(
-  async (req: TypedRequest<UserParamsDto, UserUpdateDto, {}>, res: Response) => {
-    res.status(200).json({ status: "success", id: req.params._id, data: req.body });
-  }
-);
+// update reads BOTH the param and the body — one cast per source
+export const updateUser = catchAsync(async (req: Request, res: Response) => {
+  const { _id } = req.params as UserParamsDto;
+  const body = req.body as UserUpdateDto;
+  res.status(200).json({ status: "success", id: _id, data: body });
+});
 
-// req.params : UserParamsDto
-export const deleteUser = catchAsync(
-  async (req: TypedRequestParams<UserParamsDto>, res: Response) => {
-    res.status(204).json({ status: "success", id: req.params._id });
-  }
-);
+export const deleteUser = catchAsync(async (req: Request, res: Response) => {
+  const { _id } = req.params as UserParamsDto;
+  res.status(204).json({ status: "success", id: _id });
+});
 ```
 
-Inside each handler, `req.body`, `req.params`, and `req.query` are fully typed and autocompleted —
-no casts, no `as`. The validation at the route guarantees the runtime shape matches the type.
+### The `as` is honest — because validation already ran
+
+Express types `req.body` as `any` (middleware runs at **runtime**; types are **compile-time**, so TS
+can't see that `validateRequest` cleaned the data). The cast is how you carry Zod's runtime guarantee
+into the type system — safe **only because the middleware ran first**:
+
+| Situation | Write | Why it's safe |
+|-----------|-------|---------------|
+| `validateRequest` ran on the route | `const body = req.body as Dto` | cast states a guarantee that already holds |
+| No middleware on that route | `const body = schema.parse(req.body)` | validates itself; type comes from the return |
+| never | `as` with **no** validation anywhere | an unchecked lie — runtime bug waiting to happen |
+
+> **Why `req.query` needs `as unknown as Dto`** (the double cast): Express 5 types `req.query` as
+> `ParsedQs` (everything string-ish). Your schema **coerces** `page`/`limit` to numbers, so the DTO
+> and `ParsedQs` don't overlap and TS needs the `unknown` hop. `req.body` (typed `any`) and
+> `req.params` (a string index signature) don't need it.
+
+> **Don't build custom `Request<...>` typing helpers.** It's tempting to wrap these casts in generic
+> request types so `req.body` is "auto-typed" — but that adds autocomplete and **zero** runtime safety
+> (Zod owns safety), hides the exact same assertion, and breaks on coerced query types. Plain
+> `Request` + an explicit `as` is what most Express + TS codebases use. Keep it visible.
+
+> **At scale:** when `as Dto` in every file gets repetitive (~100 controllers), centralize it once — a
+> typed **route factory** (`route({ body: schema }, handler)` that parses + types in one place), or a
+> framework that owns validation→typing end-to-end (**Fastify** zod type-provider, **NestJS** pipes,
+> **tRPC**). Learn the explicit pattern now so you recognize what those tools automate later.
 
 ---
 
@@ -301,6 +306,7 @@ production (it's a 4xx the caller can act on). Unexpected 5xx errors stay hidden
 - ⚠️ **Express 5: `req.query`/`req.params` are getter-only** — use `Object.defineProperty`, never `=`.
 - ✅ **`safeParse` over `parse`** in middleware — turn the result into an `AppError`, skip `try/catch`.
 - ✅ **`.partial()` for updates** — derive the update schema from create; don't duplicate fields.
+- ✅ **Plain `Request`/`Response` in controllers** — bind validated data with `as Dto` (or `schema.parse`); no custom typed-request helpers.
 - ✅ **`import type` for type-only imports** — required by `verbatimModuleSyntax` in this tsconfig.
 - ✅ **Prefix unused params with `_`** — `noUnusedParameters` is on (e.g. `_res`).
 
@@ -340,9 +346,8 @@ curl -X DELETE http://localhost:6001/api/v1/users/123
 |------|------|
 | [`src/modules/users/user.schema.ts`](src/modules/users/user.schema.ts) | Zod schemas + inferred DTOs (source of truth) |
 | [`src/middlewares/validateRequest.ts`](src/middlewares/validateRequest.ts) | Reusable `validateRequest(schema, source)` factory |
-| [`src/modules/users/user.controller.ts`](src/modules/users/user.controller.ts) | Typed handlers via `TypedRequest*` |
+| [`src/modules/users/user.controller.ts`](src/modules/users/user.controller.ts) | Plain `Request`/`Response` handlers; bind DTOs with `as` |
 | [`src/modules/users/user.route.ts`](src/modules/users/user.route.ts) | Routes with validation chained in |
-| [`src/types/express.ts`](src/types/express.ts) | `TypedRequestBody` / `TypedRequestParams` / `TypedRequestQuery` / `TypedRequest` |
 | [`src/utils/AppError.ts`](src/utils/AppError.ts) | Operational error class (`isOperational: true`) |
 | [`src/utils/catchAsync.ts`](src/utils/catchAsync.ts) | Async wrapper — forwards errors to `next()` |
 | [`src/middlewares/globalErrorHandler.ts`](src/middlewares/globalErrorHandler.ts) | Dev/prod error formatting |

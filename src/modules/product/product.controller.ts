@@ -1,11 +1,10 @@
 import type {
   TypedRequestBody,
   TypedRequestParams,
-  TypedRequestQuery,
   TypedRequest,
 } from "@/types/express";
 import catchAsync from "@/utils/catchAsync";
-import { type Response } from "express";
+import { type Request, type Response } from "express";
 import type {
   ProductCreateDto,
   ProductParamDto,
@@ -35,8 +34,11 @@ export const deleteProduct = catchAsync(
 );
 
 export const getAllProducts = catchAsync(
-  async (req: TypedRequestQuery<ProductQueryDto>, res: Response) => {
-    console.log("getAll products..");
+  async (req: Request, res: Response) => {
+    // Express 5 types req.query as ParsedQs (strings). validateRequest has already
+    // coerced + defaulted it, so cast to the typed DTO — the runtime shape is guaranteed.
+    const query = req.query as unknown as ProductQueryDto;
+    console.log("getAll products..", query);
   }
 );
 
