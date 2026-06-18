@@ -8,6 +8,8 @@ dotenv.config({ path: `.env.${nodeEnv}` });
 const ENV = {
   NODE_ENV: nodeEnv,
   PORT: process.env["PORT"] ?? 6001,
+  // Fallback keeps this a `string` (never undefined) so mongoose.connect never gets "undefined".
+  MONGO_URI: process.env["MONGO_URI"] || "mongodb://127.0.0.1:27017/app",
 } as const;
 
 export default ENV;

@@ -31,10 +31,12 @@ const globalErrorHandler = (
   res: Response,
   _next: NextFunction
 ) => {
-  let error = { ...err } as AppError;
-  if (!(err instanceof AppError)) {
-    error = new AppError(err.message || "Internal Server Error", 500);
-  }
+  // Use the real Error instance — spreading { ...err } drops the non-enumerable
+  // `message` and `stack`, so the client would get an error with no message.
+  const error =
+    err instanceof AppError
+      ? err
+      : new AppError(err.message || "Internal Server Error", 500);
   if (ENV.NODE_ENV === "development") {
     sendDevError(error, res);
     return;

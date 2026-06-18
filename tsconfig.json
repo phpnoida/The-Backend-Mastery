@@ -61,7 +61,8 @@
       "@config/*": ["src/config/*"],
       "@middlewares/*": ["src/middlewares/*"],
       "@utils/*": ["src/utils/*"],
-      "@types/*": ["src/types/*"],
+      // NOT "@types/*": that prefix is the reserved npm scope and TS rejects it (TS6137). Use "@app-types/*".
+      "@app-types/*": ["src/types/*"],
       "@lib/*": ["src/lib/*"]
     }
   },
