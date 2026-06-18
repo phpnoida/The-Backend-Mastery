@@ -57,12 +57,7 @@
     "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "paths": {
-      "@modules/*": ["src/modules/*"],
-      "@config/*": ["src/config/*"],
-      "@middlewares/*": ["src/middlewares/*"],
-      "@utils/*": ["src/utils/*"],
-      "@types/*": ["src/types/*"],
-      "@lib/*": ["src/lib/*"]
+      "@/*": ["src/*"]
     }
   },
   "include": ["src/**/*.ts"],

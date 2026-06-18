@@ -1,6 +1,7 @@
 import { createServer } from "http";
 import app from "./app";
-import ENV from "@config/env";
+import ENV from "@/config/env";
+import { connectDB } from "./config/mongoose";
 
 const server = createServer(app);
 const PORT = ENV.PORT;
@@ -13,7 +14,8 @@ process.on("uncaughtException", (err) => {
   process.exit(1); // Exit immediately because the app state is now polluted
 });
 
-const startServer = () => {
+const startServer = async () => {
+  await connectDB();
   server.listen(PORT, () => {
     console.log(`🚀 Server running in ${ENV.NODE_ENV} mode on port ${PORT}`);
   });

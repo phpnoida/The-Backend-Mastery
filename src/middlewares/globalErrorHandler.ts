@@ -31,10 +31,10 @@ const globalErrorHandler = (
   res: Response,
   _next: NextFunction
 ) => {
-  let error = { ...err } as AppError;
-  if (!(err instanceof AppError)) {
-    error = new AppError(err.message || "Internal Server Error", 500);
-  }
+  const error =
+    err instanceof AppError
+      ? err
+      : new AppError(err.message || "Internal Server Error", 500);
   if (ENV.NODE_ENV === "development") {
     sendDevError(error, res);
     return;

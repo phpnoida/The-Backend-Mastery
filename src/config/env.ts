@@ -8,6 +8,7 @@ dotenv.config({ path: `.env.${nodeEnv}` });
 const ENV = {
   NODE_ENV: nodeEnv,
   PORT: process.env["PORT"] ?? 6001,
+  MONGO_URI: process.env["MONGO_URI"] || "mongodb://127.0.0.1:27017/zod",
 } as const;
 
 export default ENV;
