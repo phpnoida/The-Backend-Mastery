@@ -31,8 +31,6 @@ project-root/
 │   │       ├── <feature>.model.ts
 │   │       ├── <feature>.schema.ts
 │   │       └── <feature>.test.ts
-│   ├── types/
-│   │   └── express.ts         # Typed request helpers (TypedRequestBody etc.)
 │   ├── utils/
 │   │   ├── AppError.ts        # Custom error class
 │   │   └── catchAsync.ts      # Async controller wrapper
@@ -106,13 +104,8 @@ npm install -D typescript @types/node @types/express @types/cors @types/morgan @
     "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "paths": {
-      "@modules/*": ["src/modules/*"],
-      "@config/*":  ["src/config/*"],
-      "@middlewares/*": ["src/middlewares/*"],
-      "@utils/*":   ["src/utils/*"],
-      // Don't name this "@types/*" — it collides with the reserved @types npm scope (TS6137). Use "@app-types/*".
-      "@app-types/*": ["src/types/*"],
-      "@lib/*":     ["src/lib/*"]
+      // One catch-all alias for everything under src/ — import as "@/config/env", "@/utils/catchAsync", etc.
+      "@/*": ["src/*"]
     }
   },
   "include": ["src/**/*.ts"],
@@ -127,10 +120,10 @@ npm install -D typescript @types/node @types/express @types/cors @types/morgan @
   "main": "dist/server.js",
   "type": "module",
   "scripts": {
-    "build": "rimraf dist && esbuild src/server.ts --bundle --platform=node --format=esm --packages=external --alias:@modules=./src/modules --alias:@config=./src/config --alias:@middlewares=./src/middlewares --alias:@utils=./src/utils --alias:@app-types=./src/types --alias:@lib=./src/lib --outdir=dist",
-    "start": "node dist/server.js",
+    "build": "rimraf dist && esbuild src/server.ts --bundle --platform=node --format=esm --packages=external --outdir=dist",
+    "start": "NODE_ENV=production node dist/server.js",
     "prestart": "npm run build",
-    "dev": "nodemon --watch src --ext ts --exec \"npm run build && node dist/server.js\"",
+    "dev": "NODE_ENV=development nodemon --watch src --ext ts --exec \"npm run build && node dist/server.js\"",
     "typecheck": "tsc --noEmit"
   }
 }
@@ -155,14 +148,20 @@ npm install -D typescript @types/node @types/express @types/cors @types/morgan @
 ```
 The `!` un-ignores `.env.example` so it **is** committed despite the `.*` rule.
 
-**`NODE_ENV` is never set inside a `.env` file.** It must be set before the process starts — otherwise dotenv can't know which file to load (chicken-and-egg). Set it in the npm script for dev; let the deployment platform (Heroku, Railway, AWS, Render) set it for production.
+**`NODE_ENV` is never set inside a `.env` file.** It must be set before the process starts —
+otherwise `env.ts` can't know which file to load (chicken-and-egg). Set it explicitly in **both**
+scripts so the matching `.env.*` loads: `development` for `dev`, `production` for `start`.
 
 ```json
 "scripts": {
   "dev":   "NODE_ENV=development nodemon ...",
-  "start": "node dist/server.js"
+  "start": "NODE_ENV=production node dist/server.js"
 }
 ```
+
+> On a real host (Heroku, Railway, AWS, Render) the platform usually sets `NODE_ENV=production` in
+> the environment itself — that's fine, it just matches what the script sets. Keeping it in the
+> script means `npm start` also loads `.env.production` correctly when you run a prod build locally.
 
 > **Cross-platform note:** `NODE_ENV=x` in scripts works on Linux/Mac but fails on Windows. The fix is `npm install -D cross-env` and prefix scripts with `cross-env NODE_ENV=development`.
 
@@ -203,11 +202,15 @@ Responsibilities:
 
 ### Step 9 — Create `src/app.ts`
 
-Responsibilities:
-- Create the Express app
-- Apply global middleware (`express.json`, `cors`, `helmet`, `morgan`)
-- Mount module routers under `/api/v1`
-- Mount `globalErrorHandler` **last** (Express requires 4-arg error handlers to be at the end)
+Build the Express app in this exact order (order matters):
+
+1. `helmet()` — secure HTTP headers
+2. `cors()` + `app.options("*splat", cors())` — CORS (Express 5: wildcards **must** be named)
+3. `express.json()` — parse JSON bodies
+4. `morgan(...)` — request logging (`"dev"` in development, `"combined"` in production)
+5. Mount module routers under `/api/v1` (e.g. `app.use("/api/v1", userRoute)`)
+6. **404 catch-all** — a path-less `app.use((_req, _res, next) => next(new AppError("Invalid url", 404)))`
+7. `globalErrorHandler` **last** — Express only treats a 4-arg function as an error handler, and it must come after everything so thrown `AppError`s reach it
 
 ### Step 10 — Create utilities
 
@@ -220,13 +223,41 @@ Responsibilities:
 - In `development`: send full error + stack to client
 - In `production`: only send message if `err.isOperational === true`, otherwise send generic "Something went wrong"
 
-### Step 12 — Create `src/types/express.ts`
+### Step 12 — Create your first feature module
 
-Typed request helpers to avoid writing `Request<{}, {}, Body>` generics manually every time:
-- `TypedRequestBody<T>`
-- `TypedRequestParams<T>`
-- `TypedRequestQuery<T>`
-- `TypedRequest<TParams, TBody, TQuery>`
+Each domain lives under `src/modules/<feature>/`. A minimal module is a **controller** + a **route**;
+add `schema` / `service` / `model` as the feature needs them.
+
+```ts
+// src/modules/users/user.controller.ts
+import catchAsync from "@/utils/catchAsync";
+import type { Request, Response } from "express";
+
+// Plain Request/Response. Once you add Zod validation, bind the DTO with `as`:
+//   const body = req.body as CreateUserDto;
+export const addUser = catchAsync(async (req: Request, res: Response) => {
+  const newUser = req.body;
+  res.status(201).json({ status: "success", data: newUser });
+});
+```
+
+```ts
+// src/modules/users/user.route.ts
+import { Router } from "express";
+import { addUser } from "./user.controller"; // relative import for same-folder siblings
+
+const router = Router();
+router.post("/users", addUser);
+
+export default router;
+```
+
+Then mount it in `app.ts` (Step 9): `import userRoute from "@/modules/users/user.route"` and
+`app.use("/api/v1", userRoute)` — giving `POST /api/v1/users`.
+
+> **Conventions:** controllers are always wrapped in `catchAsync`; throw `new AppError(msg, status)`
+> for handled errors (it reaches `globalErrorHandler`); controllers use plain `Request`/`Response`
+> and bind validated data with `as Dto` — no custom request-type helpers.
 
 ---
 
@@ -234,7 +265,7 @@ Typed request helpers to avoid writing `Request<{}, {}, Body>` generics manually
 
 ### Why esbuild instead of tsc?
 
-`tsc` compiles TypeScript but is slow and requires extra config for path aliases. `esbuild` is 10–100x faster and handles path alias rewriting natively via `--alias` flags. `tsc` is only used for type checking (`npm run typecheck`), not for producing output files.
+`tsc` compiles TypeScript but is slow. `esbuild` is 10–100x faster and resolves path aliases natively by **reading them straight from `tsconfig.json`**. `tsc` is only used for type checking (`npm run typecheck`), not for producing output files.
 
 ### Why `--packages=external`?
 
@@ -245,16 +276,23 @@ Without this flag, esbuild bundles all `node_modules` into one file. This causes
 
 With `--packages=external`, Node.js loads packages normally at runtime and only your source code is compiled.
 
-### Why path aliases need two places?
+### Path aliases — one place, `@/*`
 
-| Where | Tool | Why |
-|-------|------|-----|
-| `tsconfig.json` → `paths` | TypeScript | IDE autocomplete, go-to-definition, type checking |
-| `package.json` → `--alias` | esbuild | Rewrites aliases in the compiled output at build time |
+Define the alias **once** in `tsconfig.json` → `paths`. Both consumers read it from there:
 
-They must be kept in sync. If you add a new alias in `tsconfig`, add the matching `--alias` flag to the build script.
+| Tool | How it learns the alias |
+|------|-------------------------|
+| TypeScript (editor + `npm run typecheck`) | reads `tsconfig.json` → `paths` |
+| esbuild (the build) | also reads `tsconfig.json` → `paths` automatically |
 
-> **Never name an alias `@types/*`.** That prefix is the reserved npm scope for DefinitelyTyped packages (`@types/node`, `@types/express`). TypeScript hard-rejects any import string starting with `@types/` (error **TS6137**: *"Cannot import type declaration files"*) — even when your `paths` correctly map it to your own `src/types`. The check is on the *literal import string*, not where it resolves, so the alias looks right but still red-lines. Use a distinct name like `@app-types/*` for your own typed-request helpers.
+A single catch-all `"@/*": ["src/*"]` covers the whole tree — import as `@/config/env`,
+`@/utils/catchAsync`, `@/modules/...`. No per-folder aliases, and **no duplicate `--alias` flags in
+the build script** to keep in sync.
+
+> **Never name an alias `@types/*`.** That prefix is the reserved npm scope for DefinitelyTyped
+> packages (`@types/node`, `@types/express`); TypeScript hard-rejects any import string starting with
+> `@types/` (**TS6137**), even when `paths` maps it to your own folder. `@/*` sidesteps the issue
+> entirely — one more reason to prefer it.
 
 ### Why `"type": "module"` in package.json?
 
@@ -286,8 +324,7 @@ npm run typecheck  # Type check without building
 ## Gotchas
 
 - **Express 5**: wildcard routes must be named — use `*splat` not `*`
-- **Path alias `@types/*` is forbidden**: collides with the reserved npm scope → TS6137. Use `@app-types/*` (see *Why path aliases need two places?*)
-- **`catchAsync` must be generic**: type it `<P, ResBody, ReqBody, ReqQuery>` over `Request<...>`, not a fixed `Request` — otherwise `TypedRequestParams`/`TypedRequestQuery` controllers fail with *"not assignable"* (TS2345)
+- **Path aliases live in one place** (`tsconfig.json` → `paths`): use a single `@/*` → `src/*`; esbuild reads it too, so no `--alias` flags. Never name an alias `@types/*` (reserved scope → TS6137)
 - **Never spread an `Error`**: `{ ...err }`, `Object.assign`, and `JSON.stringify` drop the **non-enumerable** `message` and `stack`. Read those fields explicitly; in `globalErrorHandler` pass the real instance, don't clone it
 - **`baseUrl` deprecated in TS 6**: suppress with `"ignoreDeprecations": "6.0"` — still required for `paths` to work until TS 7 ships a replacement
 - **`noUnusedLocals` / `noUnusedParameters`**: these are on — prefix with `_` to suppress (e.g. `_req`, `_next`)

@@ -1,6 +1,6 @@
 import { createServer } from "http";
 import app from "./app";
-import ENV from "@config/env";
+import ENV from "@/config/env";
 
 const server = createServer(app);
 const PORT = ENV.PORT;

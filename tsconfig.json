@@ -57,13 +57,8 @@
     "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "paths": {
-      "@modules/*": ["src/modules/*"],
-      "@config/*": ["src/config/*"],
-      "@middlewares/*": ["src/middlewares/*"],
-      "@utils/*": ["src/utils/*"],
-      // NOT "@types/*": that prefix is the reserved npm scope and TS rejects it (TS6137). Use "@app-types/*".
-      "@app-types/*": ["src/types/*"],
-      "@lib/*": ["src/lib/*"]
+      // One catch-all alias for everything under src/. esbuild reads this too (no duplicate flags).
+      "@/*": ["src/*"]
     }
   },
   "include": ["src/**/*.ts"],

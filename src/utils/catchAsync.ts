@@ -1,21 +1,10 @@
 import { type Request, type Response, type NextFunction } from "express";
 
-// Generic over Express's 4 Request slots so a controller's typed request
-// (TypedRequestBody / Params / Query) flows through without a "not assignable" error.
+// Wraps an async route handler so a rejected promise is forwarded to Express's
+// error handler via next(err) — without this, a throwing async controller hangs the request.
 const catchAsync =
-  <P = any, ResBody = any, ReqBody = any, ReqQuery = any>(
-    fn: (
-      req: Request<P, ResBody, ReqBody, ReqQuery>,
-      res: Response,
-      next: NextFunction
-    ) => Promise<any>
-  ) =>
-  (
-    req: Request<P, ResBody, ReqBody, ReqQuery>,
-    res: Response,
-    next: NextFunction
-  ) => {
-    fn(req, res, next).catch((err) => next(err));
-  };
+  (fn: (req: Request, res: Response, next: NextFunction) => Promise<unknown>) =>
+  (req: Request, res: Response, next: NextFunction) =>
+    fn(req, res, next).catch(next);
 
 export default catchAsync;

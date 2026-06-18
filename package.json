@@ -2,13 +2,13 @@
   "name": "the-backend-mastery",
   "version": "1.0.0",
   "description": "this project will have everything for senior backend nodejs enginner",
-  "main": "src/server.js",
+  "main": "dist/server.js",
   "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "prestart": "npm run build",
-    "start": "node dist/server.js",
-    "build": "rimraf dist && esbuild src/server.ts --bundle --platform=node --format=esm --packages=external --alias:@modules=./src/modules --alias:@config=./src/config --alias:@middlewares=./src/middlewares --alias:@utils=./src/utils --alias:@app-types=./src/types --alias:@lib=./src/lib --outdir=dist",
+    "start": "NODE_ENV=production node dist/server.js",
+    "build": "rimraf dist && esbuild src/server.ts --bundle --platform=node --format=esm --packages=external --outdir=dist",
     "dev": "NODE_ENV=development nodemon --watch src --ext ts --exec \"npm run build && node dist/server.js\""
   },
   "keywords": [
