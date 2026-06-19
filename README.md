@@ -118,7 +118,7 @@ A single reusable middleware factory: pass it a schema and which part of the req
 // src/middlewares/validateRequest.ts
 import { type ZodType } from "zod";
 import { type Request, type Response, type NextFunction } from "express";
-import AppError from "@utils/AppError";
+import AppError from "@/utils/AppError";
 
 type RequestSource = "body" | "query" | "params";
 
@@ -177,7 +177,7 @@ handler stays wrapped in `catchAsync` so thrown/rejected errors reach the global
 
 ```ts
 import { type Request, type Response } from "express";
-import catchAsync from "@utils/catchAsync";
+import catchAsync from "@/utils/catchAsync";
 import {
   type UserCreateDto,
   type UserUpdateDto,
@@ -246,7 +246,7 @@ an update needs both the `:_id` param *and* the body checked:
 
 ```ts
 import { Router } from "express";
-import validateRequest from "@middlewares/validateRequest";
+import validateRequest from "@/middlewares/validateRequest";
 import {
   userCreateSchema,
   userUpdateSchema,
@@ -276,6 +276,143 @@ export default router;
 
 The router is mounted under `/api/v1` in [`src/app.ts`](src/app.ts), so the full paths are
 `/api/v1/users` and `/api/v1/users/:_id`.
+
+---
+
+## Module Skeleton — Reference Template
+
+A complete `user` module with the **logic stubbed out** — copy this shape for any new resource.
+Five files, each with one job: **model → schema → service → controller → route**.
+
+### Naming: controller vs service
+
+The two layers use **different verbs on purpose** so they never read as duplicates:
+
+| Endpoint | Controller (HTTP action) | Service (data operation) |
+|----------|--------------------------|--------------------------|
+| `POST /users` | `createUser` | `userService.create` |
+| `GET /users` | `getUsers` | `userService.findAll` |
+| `GET /users/:_id` | `getUser` | `userService.findById` |
+| `PATCH /users/:_id` | `updateUser` | `userService.update` |
+| `DELETE /users/:_id` | `deleteUser` | `userService.remove` |
+
+- **Controller** names describe the **HTTP intent** ("handle the create-user request").
+- **Service** names describe the **persistence intent** ("find the user in Mongo"). Group them under
+  one `userService` object so call sites read `userService.findById(id)` — the resource lives in the
+  object name, not repeated in every method.
+
+### `user.model.ts` — Mongoose model (types inferred, never hand-written)
+
+```ts
+import { Schema, model, type InferSchemaType, type HydratedDocument } from "mongoose";
+
+const userSchema = new Schema(
+  {
+    fName: { type: String, required: true, trim: true },
+    lName: { type: String, trim: true },
+    email: { type: String, required: true, unique: true, lowercase: true },
+    phone: { type: String, required: true },
+  },
+  { timestamps: true } // adds createdAt / updatedAt
+);
+
+export type UserType = InferSchemaType<typeof userSchema>; // plain object shape
+export type UserDoc = HydratedDocument<UserType>;          // a live document (_id, .save(), ...)
+
+export const User = model("User", userSchema);
+```
+
+### `user.schema.ts` — Zod (request validation + DTOs)
+
+Exactly **Step 1 + Step 2** above: the Zod schemas and their `z.infer` DTOs
+(`UserCreateDto`, `UserUpdateDto`, `UserQueryDto`, `UserParamsDto`).
+
+### `user.service.ts` — the data layer (this is where autocomplete lives)
+
+```ts
+import { User, type UserDoc } from "./user.model";
+import type { UserCreateDto, UserUpdateDto, UserQueryDto } from "./user.schema";
+
+// Methods named after the DATA operation, grouped under one object.
+// The explicit return types (UserDoc / UserDoc | null) are what give CALLERS autocomplete.
+export const userService = {
+  create(data: UserCreateDto): Promise<UserDoc> {
+    // your logic goes here →  return User.create(data);
+  },
+
+  findAll(query: UserQueryDto): Promise<UserDoc[]> {
+    // your logic goes here →  build filter from query, then User.find(filter).sort(...).skip(...).limit(...)
+  },
+
+  findById(id: string): Promise<UserDoc | null> {
+    // your logic goes here →  return User.findById(id);   // null when missing → controller makes it a 404
+  },
+
+  update(id: string, data: UserUpdateDto): Promise<UserDoc | null> {
+    // your logic goes here →  return User.findByIdAndUpdate(id, data, { new: true, runValidators: true });
+  },
+
+  remove(id: string): Promise<UserDoc | null> {
+    // your logic goes here →  return User.findByIdAndDelete(id);
+  },
+};
+```
+
+**How autocomplete works here** (the part tutorials skip):
+
+1. `User` is a **typed model** — `InferSchemaType` read your schema, so `User.findById(...)` already
+   resolves to `UserDoc | null`. Type `User.` and the editor lists every model method.
+2. Inside a method, the awaited doc is a `UserDoc`, so `user.email`, `user.fName`, `user._id` all
+   autocomplete from the schema — no hand-written `interface`.
+3. The **explicit return type** on each method is what makes the *controller* autocomplete: when it
+   writes `const user = await userService.findById(id)`, `user` is known to be `UserDoc | null`
+   without the controller importing anything Mongoose-specific.
+
+> Two sources of truth, cleanly split: the **Mongoose schema** generates the document type
+> (`UserDoc`); the **Zod schema** generates the request DTOs. The service is the *only* layer that
+> touches the database.
+
+### `user.controller.ts` — the HTTP layer (thin: validation done, call service, respond)
+
+```ts
+import { type Request, type Response } from "express";
+import catchAsync from "@/utils/catchAsync";
+import AppError from "@/utils/AppError";
+import { userService } from "./user.service";
+import type { UserCreateDto, UserParamsDto } from "./user.schema";
+
+export const createUser = catchAsync(async (req: Request, res: Response) => {
+  const body = req.body as UserCreateDto;        // validated upstream by validateRequest
+  const user = await userService.create(body);   // `user` is UserDoc — full autocomplete
+  // your logic goes here (anything extra before responding)
+  res.status(201).json({ status: "success", data: user });
+});
+
+export const getUser = catchAsync(async (req: Request, res: Response) => {
+  const { _id } = req.params as UserParamsDto;
+  const user = await userService.findById(_id);
+  if (!user) throw new AppError("User not found", 404); // unknown id → 404, not 500
+  res.status(200).json({ status: "success", data: user });
+});
+```
+
+### `user.route.ts` — validate, then hand off to the controller
+
+```ts
+import { Router } from "express";
+import validateRequest from "@/middlewares/validateRequest";
+import { userCreateSchema, userParamsSchema } from "./user.schema";
+import { createUser, getUser } from "./user.controller";
+
+const router = Router();
+router.post("/users", validateRequest(userCreateSchema), createUser);
+router.get("/users/:_id", validateRequest(userParamsSchema, "params"), getUser);
+
+export default router;
+```
+
+**The request's life:** `route` (validate) → `controller` (HTTP) → `service` (DB) → `model` (Mongoose).
+Each layer only knows the one directly below it.
 
 ---
 
@@ -344,10 +481,12 @@ curl -X DELETE http://localhost:6001/api/v1/users/123
 
 | File | Role |
 |------|------|
-| [`src/modules/users/user.schema.ts`](src/modules/users/user.schema.ts) | Zod schemas + inferred DTOs (source of truth) |
+| [`src/modules/users/user.model.ts`](src/modules/users/user.model.ts) | Mongoose schema + model; `UserDoc` type via `InferSchemaType` |
+| [`src/modules/users/user.schema.ts`](src/modules/users/user.schema.ts) | Zod schemas + inferred DTOs (request source of truth) |
+| [`src/modules/users/user.service.ts`](src/modules/users/user.service.ts) | Data layer — `create`/`findAll`/`findById`/`update`/`remove`; only layer touching the DB |
 | [`src/middlewares/validateRequest.ts`](src/middlewares/validateRequest.ts) | Reusable `validateRequest(schema, source)` factory |
-| [`src/modules/users/user.controller.ts`](src/modules/users/user.controller.ts) | Plain `Request`/`Response` handlers; bind DTOs with `as` |
-| [`src/modules/users/user.route.ts`](src/modules/users/user.route.ts) | Routes with validation chained in |
+| [`src/modules/users/user.controller.ts`](src/modules/users/user.controller.ts) | HTTP layer — bind DTOs with `as`, call the service, respond |
+| [`src/modules/users/user.route.ts`](src/modules/users/user.route.ts) | Routes with validation chained before each controller |
 | [`src/utils/AppError.ts`](src/utils/AppError.ts) | Operational error class (`isOperational: true`) |
 | [`src/utils/catchAsync.ts`](src/utils/catchAsync.ts) | Async wrapper — forwards errors to `next()` |
 | [`src/middlewares/globalErrorHandler.ts`](src/middlewares/globalErrorHandler.ts) | Dev/prod error formatting |
