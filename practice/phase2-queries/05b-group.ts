@@ -222,5 +222,25 @@ const f9 = async () => {
 // Stages: $sort, $group
 // YOUR ANSWER:
 
+const fn10 = async () => {
+  const data = await Order.aggregate([
+    {
+      $sort: {
+        createdAt: 1,
+      },
+    },
+    {
+      $group: {
+        _id: "$customerId",
+        firstOrder: { $first: "$createdAt" },
+        lastOrder: { $last: "$createdAt" },
+        orderCount: { $sum: 1 },
+      },
+    },
+  ]);
+  console.log("data", data);
+};
+await fn10();
+
 await mongoose.disconnect();
 console.log("\nDone.");
