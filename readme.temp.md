@@ -1,60 +1,64 @@
-# 🧠 Zod + Express CRUD — How It All Connects (Reference)
+# 🧠 Zod + Express CRUD — One Full Picture (Reference)
 
 > Read top → bottom once. Every block has a **one-line plain-English** summary, then the code.
-> This is the *target* shape (best-practice, generic `validateRequest`, no `as` casts).
+> This is the **final, coherent design** we landed on:
+> *validate at the edge → write the clean data back to its native slot → type the handler with
+> `TypedRequest*` → read it with **zero `as` casts**.*
 
 ---
 
 ## 1. The 30-second mental model
 
-A request is a parcel moving down an assembly line. Each station does **one** job and hands it on:
+A request is a parcel on an assembly line. Each station does **one** job, then hands it on:
 
 ```
 HTTP request
    │
    ▼
-[ ROUTE ]          "which URL + method? send it down the right line"
+[ ROUTE ]            "which URL + method? send it down the right line"
    │
    ▼
-[ validateRequest ] (middleware)   "gatekeeper: is the parcel clean? bad → 400 STOP here"
-   │  (attaches the clean, typed data to req.validated)
-   ▼
-[ CONTROLLER ]     "translator: read req → call the right service → shape the HTTP reply"
+[ validateRequest ] "bouncer: clean? bad → 400 STOP.  good → write clean data back to req.body/params/query"
    │
    ▼
-[ SERVICE ]        "the worker: talks to the DB, knows zero about HTTP"
+[ catchAsync ]      "safety wrapper: if the async handler throws, forward to the error handler"
    │
    ▼
-[ MODEL ]          "the DB blueprint: what a Product looks like in MongoDB"
+[ CONTROLLER ]      "translator: read typed req → call ONE service fn → shape the HTTP reply"
+   │
+   ▼
+[ SERVICE ]         "worker: pure DB logic, knows nothing about req/res"
+   │
+   ▼
+[ MODEL ]           "blueprint: the MongoDB shape + DB guarantees (unique, required)"
    │
    ▼
 MongoDB
 ```
 
-**Golden rule:** bad data never reaches the controller. Validation is the *edge*. By the time
-your controller runs, the data is already clean **and** correctly typed.
-
-**One-line-per-layer:**
+**Golden rule:** bad data dies at the bouncer (step 2). By the time the controller runs, the data
+is **clean *and* correctly typed** — so no validation and no `as` casts live in the controller.
 
 | Layer | One line |
 |-------|----------|
-| **schema** (Zod) | The rulebook for incoming data — and the source of every TS type. |
-| **route** | The switchboard — maps URL+method to `[validator, controller]`. |
-| **validateRequest** | The bouncer — checks the rulebook, rejects bad input with 400, passes clean+typed data on. |
-| **controller** | The translator — HTTP in, service call, HTTP out. No DB code, no business rules. |
-| **service** | The worker — pure DB logic. Knows nothing about `req`/`res`. |
-| **model** | The blueprint — the MongoDB shape + DB-level guarantees (`unique`, `required`). |
+| **schema** (Zod) | The rulebook for incoming data — and the source of every TS type via `z.infer`. |
+| **types** (`TypedRequest*`) | Tiny aliases that tell TS the shape of `req.body`/`params`/`query`. |
+| **validateRequest** | Bouncer — checks the rulebook, 400s bad input, writes clean data back to its native slot. |
+| **catchAsync** | Try/catch you don't have to write — forwards async errors to the global handler. |
+| **route** | Switchboard — maps URL+method to `[validator(s) → controller]`. |
+| **controller** | Translator — typed HTTP in, one service call, HTTP out. No DB, no rules. |
+| **service** | Worker — pure DB logic. No `req`, no `res`, no status codes. |
+| **model** | Blueprint — Mongoose shape + last-line DB defense (`unique`, `required`). |
 
 ---
 
-## 2. `product.schema.ts` — the rulebook (and where types are born)
+## 2. `product.schema.ts` — the rulebook (types are born here)
 
-**One line:** *Zod schemas validate incoming data at runtime, and `z.infer` turns each one into a TS type for free — write the rules once, get the type automatically.*
+**One line:** *Zod schemas validate data at runtime; `z.infer` turns each schema into a TS type for free — write the rule once, the type follows automatically.*
 
 ```ts
 import { z } from "zod";
 
-// the POST body rulebook
 export const productCreateSchema = z.object({
   title:    z.string().trim().min(2).max(100),
   sku:      z.string().regex(/^[A-Z0-9]+(-[A-Z0-9]+)*$/),
@@ -66,11 +70,9 @@ export const productCreateSchema = z.object({
   description: z.string().max(500).optional(),
 });
 
-// PATCH body = same rules, every field optional (DRY — don't retype)
-export const productUpdateSchema = productCreateSchema.partial();
+export const productUpdateSchema = productCreateSchema.partial(); // PATCH: all optional (DRY)
 
-// GET ?query — values arrive as STRINGS, so coerce the numbers
-export const productQuerySchema = z.object({
+export const productQuerySchema = z.object({   // query values arrive as STRINGS → coerce
   page:  z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(10),
   sort:   z.enum(["asc", "desc"]).default("desc"),
@@ -81,36 +83,50 @@ export const productQuerySchema = z.object({
   search:   z.string().trim().optional(),
 });
 
-// :id param — a 24-char Mongo ObjectId
 export const productParamsSchema = z.object({
-  id: z.string().regex(/^[a-f\d]{24}$/i),
+  id: z.string().regex(/^[a-f\d]{24}$/i),       // 24-char Mongo ObjectId
 });
 
-// 🔑 the types are DERIVED from the schemas — one source of truth
+// 🔑 types DERIVED from schemas — one source of truth, no drift
 export type ProductCreateDto = z.infer<typeof productCreateSchema>;
 export type ProductUpdateDto = z.infer<typeof productUpdateSchema>;
 export type ProductQueryDto  = z.infer<typeof productQuerySchema>;
 export type ProductParamDto  = z.infer<typeof productParamsSchema>;
 ```
 
-**Why it matters:** the schema is the *only* place the shape is defined. Change a rule here and
-the TS type updates everywhere automatically. No drift, ever.
+---
+
+## 3. `src/types/express.ts` — typed-request aliases (restore this file)
+
+**One line:** *Thin shortcuts over Express's built-in `Request<Params, ResBody, ReqBody, Query>` generics so a handler can say "my body is `ProductCreateDto`" without writing the ugly 4-slot generic by hand.*
+
+```ts
+import { type Request } from "express";
+
+export type TypedRequestBody<T>   = Request<{}, {}, T>;          // typed req.body
+export type TypedRequestParams<T> = Request<T>;                 // typed req.params
+export type TypedRequestQuery<T>  = Request<{}, {}, {}, T>;     // typed req.query
+export type TypedRequest<P, B, Q> = Request<P, {}, B, Q>;       // typed params + body + query
+```
+
+**Why these exist:** Express's generic order is `Request<Params, ResBody, ReqBody, Query>` —
+unintuitive and noisy. These aliases name the common cases so the controllers stay readable.
+Because `validateRequest` writes the *clean* data back to `req.body`/`params`/`query` (next step),
+these types describe data that is **guaranteed valid** — no `as`, no lying to the compiler.
 
 ---
 
-## 3. `validateRequest.ts` — the bouncer (generic version)
+## 4. `validateRequest.ts` — the bouncer (write-back, Express-5-safe)
 
-**One line:** *A reusable middleware that runs a Zod schema against one part of the request; if it fails it stops with a clean 400, if it passes it stashes the clean, typed data on `req.validated`.*
+**One line:** *Runs a Zod schema against one part of the request; bad → stop with a clean 400; good → overwrite that native slot (`req.body`/`params`/`query`) with the clean, coerced value and continue.*
 
 ```ts
-import { type ZodType, type infer as ZInfer } from "zod"; // (just for illustration)
-import { type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
+import { type Request, type Response, type NextFunction } from "express";
 import AppError from "@/utils/AppError";
 
 type RequestSource = "body" | "query" | "params";
 
-// <T extends z.ZodType>  ← the generic: "remember WHICH schema was passed"
 const validateRequest =
   <T extends z.ZodType>(schema: T, source: RequestSource = "body") =>
   (req: Request, _res: Response, next: NextFunction) => {
@@ -120,53 +136,126 @@ const validateRequest =
       const message = result.error.issues
         .map((i) => `${i.path.join(".") || source}: ${i.message}`)
         .join("; ");
-      return next(new AppError(message, 400)); // ⛔ STOP — controller never runs
+      return next(new AppError(message, 400));   // ⛔ controller never runs
     }
 
-    // result.data is typed as z.output<T> — the CLEAN, coerced, defaulted value.
-    // We park it on req.validated so the controller reads it WITHOUT an `as` cast.
-    req.validated = result.data;
-    next(); // ✅ pass the clean parcel down the line
+    // Write the CLEAN value back to its native slot.
+    // ⚠️ Express 5: req.query / req.params are GETTER-ONLY — `req.query = ...` THROWS.
+    // Object.defineProperty shadows the getter, so this is safe for all three sources.
+    Object.defineProperty(req, source, {
+      value: result.data,        // coerced numbers + applied defaults
+      writable: true,
+      configurable: true,
+    });
+    next();                       // ✅ pass the clean parcel on
   };
 
 export default validateRequest;
 ```
 
-**The two jobs, restated:**
-1. **Reject** bad input → `400` *before* the controller. (security + clean errors)
-2. **Transform** good input → coerced numbers, applied defaults, then hand it on typed.
+**Two jobs:** (1) **reject** bad input → 400 *before* the controller; (2) **transform** good input
+(coerce strings→numbers, fill defaults) and hand it on. Because it writes back to the *native*
+slot, you can stack multiple validators on one route and none clobbers another.
 
-**The generic `<T>`** is the magic: because the function *remembers which schema* you gave it,
-`result.data` is typed as that schema's exact output — not `any`, not a guess.
+> 💡 This is why we DON'T use a single `req.validated` bucket: on PATCH (params + body) the second
+> validator would overwrite the first. Writing back to `req.params` *and* `req.body` keeps both.
 
 ---
 
-## 4. `express.d.ts` — teaching TS about `req.validated`
+## 5. `catchAsync.ts` — the try/catch you don't write
 
-**One line:** *Express's `Request` doesn't know about our custom `req.validated`, so we declare it once, globally — this is "declaration merging."*
+**One line:** *Wraps an async handler so any thrown error (or rejected promise) is auto-forwarded to Express's global error handler — and its generics preserve your `TypedRequest` types.*
 
 ```ts
-// src/types/express.d.ts
-import "express";
+import { type Request, type Response, type NextFunction } from "express";
 
-declare global {
-  namespace Express {
-    interface Request {
-      validated?: unknown; // each handler narrows this to its own DTO
-    }
-  }
-}
-export {};
+// Generic <P, ResBody, ReqBody, ReqQuery> matches Express's Request generics,
+// so the typed request you pass in stays typed inside the handler.
+const catchAsync =
+  <P = any, ResBody = any, ReqBody = any, ReqQuery = any>(
+    fn: (req: Request<P, ResBody, ReqBody, ReqQuery>, res: Response, next: NextFunction) => Promise<any>
+  ) =>
+  (req: Request<P, ResBody, ReqBody, ReqQuery>, res: Response, next: NextFunction) => {
+    fn(req, res, next).catch(next);   // any throw/reject → next(err) → globalErrorHandler
+  };
+
+export default catchAsync;
 ```
 
-**Why:** without this, `req.validated = ...` is a TS error ("property doesn't exist"). This file
-adds the property to *every* `Request` in the project. Write it once, forget it.
+**Why:** without it, every async handler needs its own `try { } catch (e) { next(e) }`. This
+removes that boilerplate from all five controllers — throw an `AppError` and forget it.
 
 ---
 
-## 5. `product.route.ts` — the switchboard
+## 6. `product.controller.ts` — the translator (zero `as`)
 
-**One line:** *Maps each URL+method to a chain of `[validator(s), controller]` — read a route line left-to-right and you see the entire request pipeline.*
+**One line:** *Each handler is typed with a `TypedRequest*`, reads the already-clean `req.body`/`params`/`query` directly, calls ONE service fn, and shapes the response — no DB code, no validation, no casts.*
+
+```ts
+import catchAsync from "@/utils/catchAsync";
+import AppError from "@/utils/AppError";
+import { productService } from "./product.service";
+import type {
+  TypedRequestBody, TypedRequestParams, TypedRequestQuery, TypedRequest,
+} from "@/types/express";
+import type {
+  ProductCreateDto, ProductUpdateDto, ProductQueryDto, ProductParamDto,
+} from "./product.schema";
+import type { Response } from "express";
+
+// CREATE — body is typed, already validated
+export const createProduct = catchAsync(
+  async (req: TypedRequestBody<ProductCreateDto>, res: Response) => {
+    const product = await productService.create(req.body);   // req.body: ProductCreateDto ✅
+    res.status(201).json({ status: "success", data: product });
+  }
+);
+
+// LIST — query is coerced + defaulted by the schema
+export const getAllProducts = catchAsync(
+  async (req: TypedRequestQuery<ProductQueryDto>, res: Response) => {
+    const result = await productService.findAll(req.query); // req.query.page is a number ✅
+    res.status(200).json({ status: "success", ...result });
+  }
+);
+
+// READ ONE — missing → 404 (not 500)
+export const getOneProduct = catchAsync(
+  async (req: TypedRequestParams<ProductParamDto>, res: Response) => {
+    const product = await productService.findById(req.params.id);
+    if (!product) throw new AppError("Product not found", 404);
+    res.status(200).json({ status: "success", data: product });
+  }
+);
+
+// UPDATE — params AND body both typed (both were validated in the route)
+export const updateProduct = catchAsync(
+  async (req: TypedRequest<ProductParamDto, ProductUpdateDto, never>, res: Response) => {
+    const product = await productService.update(req.params.id, req.body);
+    if (!product) throw new AppError("Product not found", 404);
+    res.status(200).json({ status: "success", data: product });
+  }
+);
+
+// DELETE — 204 = success, NO body
+export const deleteProduct = catchAsync(
+  async (req: TypedRequestParams<ProductParamDto>, res: Response) => {
+    const product = await productService.delete(req.params.id);
+    if (!product) throw new AppError("Product not found", 404);
+    res.status(204).send();
+  }
+);
+```
+
+**Three rules a controller obeys:** (1) never touch the DB directly — call a service; (2) never
+re-validate — that happened at the edge; (3) a missing record → `throw new AppError(msg, 404)`,
+which `catchAsync` forwards to the global handler.
+
+---
+
+## 7. `product.route.ts` — the switchboard
+
+**One line:** *Maps each URL+method to a chain `[validator(s) → controller]` — read a route line left-to-right and you see the whole pipeline for that request.*
 
 ```ts
 import { Router } from "express";
@@ -186,100 +275,38 @@ router.route("/products")
 router.route("/products/:id")
   .get   (validateRequest(productParamsSchema, "params"), ctrl.getOneProduct)
   .patch (
-    validateRequest(productParamsSchema, "params"),   // ① check the id
-    validateRequest(productUpdateSchema, "body"),     // ② check the body  ← BOTH
-    ctrl.updateProduct)
+    validateRequest(productParamsSchema, "params"),   // ① validate the id  → writes req.params
+    validateRequest(productUpdateSchema, "body"),     // ② validate the body → writes req.body
+    ctrl.updateProduct)                               // both survive (native-slot write-back)
   .delete(validateRequest(productParamsSchema, "params"), ctrl.deleteProduct);
 
 export default router;
 ```
 
-**Read it like a sentence:** "POST /products → validate the body → then run createProduct."
-Note PATCH chains **two** validators (params *then* body) — both must pass.
-
-> ⚠️ Gotcha note: `req.validated` holds **only the last validator's** output. For PATCH (params +
-> body) decide how you read both — e.g. read `id` from `req.params` and the body from
-> `req.validated`, or store under named keys. Keep it consistent.
+**Read it like a sentence:** "POST /products → validate body → run createProduct." PATCH chains
+**two** validators; thanks to native-slot write-back, both `req.params` and `req.body` arrive clean.
 
 ---
 
-## 6. `product.controller.ts` — the translator
+## 8. `product.service.ts` — the worker
 
-**One line:** *Each handler reads the already-clean `req.validated`, calls one service function, and shapes the HTTP response — no DB code, no validation, no business rules.*
-
-```ts
-import catchAsync from "@/utils/catchAsync";
-import AppError from "@/utils/AppError";
-import { productService } from "./product.service";
-import type { Request, Response } from "express";
-import type {
-  ProductCreateDto, ProductUpdateDto, ProductQueryDto, ProductParamDto,
-} from "./product.schema";
-
-// a tiny typed reader — the ONLY place a cast lives, instead of one per handler
-const body = <T>(req: Request) => req.validated as T;
-
-export const createProduct = catchAsync(async (req: Request, res: Response) => {
-  const product = await productService.create(body<ProductCreateDto>(req));
-  res.status(201).json({ status: "success", data: product });
-});
-
-export const getAllProducts = catchAsync(async (req: Request, res: Response) => {
-  const result = await productService.findAll(body<ProductQueryDto>(req));
-  res.status(200).json({ status: "success", ...result });
-});
-
-export const getOneProduct = catchAsync(async (req: Request, res: Response) => {
-  const { id } = req.params as ProductParamDto;
-  const product = await productService.findById(id);
-  if (!product) throw new AppError("Product not found", 404); // missing → 404 (not 500)
-  res.status(200).json({ status: "success", data: product });
-});
-
-export const updateProduct = catchAsync(async (req: Request, res: Response) => {
-  const { id } = req.params as ProductParamDto;
-  const product = await productService.update(id, body<ProductUpdateDto>(req));
-  if (!product) throw new AppError("Product not found", 404);
-  res.status(200).json({ status: "success", data: product });
-});
-
-export const deleteProduct = catchAsync(async (req: Request, res: Response) => {
-  const { id } = req.params as ProductParamDto;
-  const product = await productService.delete(id);
-  if (!product) throw new AppError("Product not found", 404);
-  res.status(204).send(); // 204 = success, NO body
-});
-```
-
-**Three rules a controller obeys:**
-1. It **never** touches the DB directly — it calls a service.
-2. It **never** re-validates — that already happened at the edge.
-3. A missing record is a **404**, thrown as `AppError`, caught by `catchAsync` → global handler.
-
----
-
-## 7. `product.service.ts` — the worker
-
-**One line:** *Pure database logic — takes plain typed data, returns documents, and knows nothing about `req`, `res`, or HTTP status codes (so it's reusable and testable).*
+**One line:** *Pure database logic — takes plain typed data, returns documents/null, and knows nothing about HTTP (so it's reusable from a CLI, a cron job, or a test).*
 
 ```ts
 import { Product, type ProductDoc } from "./product.model";
-import type {
-  ProductCreateDto, ProductUpdateDto, ProductQueryDto,
-} from "./product.schema";
+import type { ProductCreateDto, ProductUpdateDto, ProductQueryDto } from "./product.schema";
 
 export const productService = {
-  create: (data: ProductCreateDto): Promise<ProductDoc> => Product.create(data),
-
+  create:   (data: ProductCreateDto): Promise<ProductDoc> => Product.create(data),
   findById: (id: string) => Product.findById(id),
 
-  // runValidators re-checks the Mongoose rules on update — keep it on
+  // runValidators re-checks Mongoose rules on update — keep it ON
   update: (id: string, data: ProductUpdateDto) =>
     Product.findByIdAndUpdate(id, data, { new: true, runValidators: true }),
 
   delete: (id: string) => Product.findByIdAndDelete(id),
 
-  // the real list query: build filter conditionally → sort → paginate
+  // real list query: build filter conditionally → sort → paginate
   async findAll(q: ProductQueryDto) {
     const filter: Record<string, unknown> = {};
     if (q.category) filter["category"] = q.category;
@@ -290,7 +317,6 @@ export const productService = {
         ...(q.maxPrice != null && { $lte: q.maxPrice }),
       };
     }
-
     const [data, total] = await Promise.all([
       Product.find(filter)
         .sort({ [q.sortBy]: q.sort === "asc" ? 1 : -1 })
@@ -298,21 +324,19 @@ export const productService = {
         .limit(q.limit),
       Product.countDocuments(filter),
     ]);
-
-    return { data, page: q.page, limit: q.limit, total,
-             totalPages: Math.ceil(total / q.limit) };
+    return { data, page: q.page, limit: q.limit, total, totalPages: Math.ceil(total / q.limit) };
   },
 };
 ```
 
-**Why HTTP-free?** The same `findById` could be called by a CLI script, a cron job, or a test —
-none of which have a `req`. Keeping HTTP out of here is what makes it reusable.
+**Why HTTP-free?** `findById` should be callable by a test or a script that has no `req`. Keeping
+HTTP out is what makes the service reusable.
 
 ---
 
-## 8. `product.model.ts` — the blueprint
+## 9. `product.model.ts` — the blueprint
 
-**One line:** *The Mongoose schema is the DB's own shape + last line of defense (`unique`, `required`, types) — Zod guards the door, this guards the database.*
+**One line:** *The Mongoose schema is the DB's own shape + last line of defense — Zod guards the door, this guards the database.*
 
 ```ts
 import { model, Schema, type HydratedDocument, type InferSchemaType } from "mongoose";
@@ -331,50 +355,40 @@ const productSchema = new Schema({
 
 export type ProductType = InferSchemaType<typeof productSchema>;
 export type ProductDoc  = HydratedDocument<ProductType>;
-
-export const Product = model("Product", productSchema);
+export const Product    = model("Product", productSchema);
 ```
 
-**Zod vs Mongoose — why both?**
-- **Zod** runs *first*, at the HTTP edge → clean `400`s, coercion, defaults for the *request*.
-- **Mongoose** runs *last*, at the DB → enforces `unique` (Zod can't — it doesn't see the DB) and
-  is the safety net if data ever reaches the model another way.
-- Overlap (`required`, `min`) is normal and good — defense in depth.
+**Zod vs Mongoose:** Zod runs *first* at the HTTP edge (clean 400s, coercion, defaults);
+Mongoose runs *last* at the DB (enforces `unique`, which Zod can't know). Overlap = defense in depth.
 
 ---
 
-## 9. Wiring it to boot (the plumbing)
+## 10. 🎬 ONE FULL CRUD TRACE — `PATCH /api/v1/products/:id`
 
-**One line each:**
+`PATCH /api/v1/products/665f8a.../` with body `{ "price": 3999 }`
 
-```ts
-// src/config/mongoose.ts — open the DB connection, fail loudly if it can't
-export const connectDB = async () => { await mongoose.connect(ENV.MONGO_URI); };
+| # | Where | What happens |
+|---|-------|--------------|
+| 1 | **app.ts** | `app.use("/api/v1", productRoute)` matches the prefix → into the product router. |
+| 2 | **route** | matches `PATCH /products/:id` → runs the chain below. |
+| 3 | **validateRequest(params)** | `665f8a...` passes the ObjectId regex ✅ → writes clean value to `req.params`. |
+| 4 | **validateRequest(body)** | `{ price: 3999 }` passes `productUpdateSchema.partial()` ✅ → writes clean value to `req.body`. |
+| 5 | **catchAsync** | wraps `updateProduct`; if it throws, the error skips to the global handler. |
+| 6 | **updateProduct** | typed `req.params.id` + `req.body` (no casts) → `productService.update(id, body)`. |
+| 7 | **service.update** | `findByIdAndUpdate(id, { price: 3999 }, { new, runValidators })`. |
+| 8 | **result** | found → returns updated doc → controller sends `200 + data`. <br> not found → service returns `null` → controller `throw AppError(404)` → `catchAsync` → global handler → clean `404` JSON. |
 
-// src/server.ts — connect FIRST, then listen (no point serving with no DB)
-const start = async () => { await connectDB(); server.listen(PORT); };
-start();
-
-// src/app.ts — mount the router under the API prefix
-app.use("/api/v1", productRoute);
-```
+**The whole thing in one sentence:**
+*Route picks the line → bouncer cleans & writes the typed data back to its native slot → catchAsync guards the handler → controller translates → service does the DB work → model is the shape — and bad data dies at the bouncer.*
 
 ---
 
-## 10. Full trace of one request (tie it together)
+## 11. Your checklist to make it real
 
-`PATCH /api/v1/products/665f.../  body: { "price": 3999 }`
-
-1. **app.ts** — matches `/api/v1` → hands to `productRoute`.
-2. **route** — matches `PATCH /products/:id` → runs the chain.
-3. **validateRequest(params)** — `665f...` matches the ObjectId regex ✅ → `req.validated = { id }`.
-4. **validateRequest(body)** — `{ price: 3999 }` passes `productUpdateSchema.partial()` ✅ →
-   `req.validated = { price: 3999 }`.
-5. **updateProduct** — reads `id` from params, body from `req.validated`, calls the service.
-6. **service.update** — `findByIdAndUpdate(id, { price: 3999 }, { new, runValidators })`.
-7. Found → returns updated doc → controller sends `200 + data`.
-   Not found → service returns `null` → controller throws `AppError(404)` → `catchAsync` →
-   global error handler → clean `404` JSON.
-
-**One sentence to remember the whole thing:**
-*Route picks the line → middleware cleans & types the data → controller translates → service does the DB work → model is the shape — and bad data dies at step 2.*
+- [ ] Restore `src/types/express.ts` (§3).
+- [ ] `validateRequest` uses `Object.defineProperty` write-back (§4) — not `req.x = ...`.
+- [ ] Controllers typed with `TypedRequest*`, **zero `as` casts** (§6).
+- [ ] Route: PATCH chains **params + body** validators (§7).
+- [ ] Service: `update` has `runValidators: true`; `findAll` actually filters/sorts/paginates (§8).
+- [ ] DELETE returns `204` no body (§6).
+- [ ] `npx tsc --noEmit` clean.
