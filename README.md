@@ -434,6 +434,50 @@ production (it's a 4xx the caller can act on). Unexpected 5xx errors stay hidden
 
 ---
 
+## API Response Standard
+
+Every route returns the **same envelope** so the frontend writes its response-handling logic once and
+trusts it everywhere. This project uses the **JSend** convention (`status: "success" | "fail" | "error"`).
+
+### The envelope
+
+```jsonc
+// success — single resource
+{ "status": "success", "data": { "fName": "Amit", "email": "amit@example.com" } }
+
+// success — list, with response metadata as TOP-LEVEL siblings of `data`
+{
+  "status": "success",
+  "results": 20,                              // metadata about the response
+  "meta": { "page": 2, "limit": 10, "total": 57 },
+  "data": { "users": [ /* ... */ ] }          // the actual payload
+}
+
+// fail — client's fault (validation, bad id) → 4xx
+{ "status": "fail", "message": "phone must be exactly 10 digits" }
+
+// error — server's fault (unexpected exception) → 5xx
+{ "status": "error", "message": "Something went wrong!" }
+```
+
+### The three rules
+
+| Rule | Why |
+|------|-----|
+| **HTTP status code is the source of truth** | The transport-level signal. HTTP clients (`axios`/`fetch`) branch on it automatically — `2xx` resolves, `4xx`/`5xx` rejects. **Always set the real code** (`AppError(msg, 404)`). Never return `200` with `{ status: "fail" }` — that breaks every client's error handling. |
+| **The body field is secondary** | `status` + `message` confirm the outcome and carry the human-readable text. Control flow keys off the HTTP code; *what you show the user* comes from the body. |
+| **Payload → inside `data`; metadata → top-level** | Resource fields nest inside `data`. Info *about the response* (pagination, counts, request id) sit beside `data`, or grouped under `meta` — they describe the response, not the resource. |
+
+> **`success`/`fail`/`error` maps onto `AppError`:** `fail` = operational 4xx the caller can act on
+> (exposed in production), `error` = unexpected 5xx hidden behind a generic message. This is exactly
+> what [`globalErrorHandler.ts`](src/middlewares/globalErrorHandler.ts) already does.
+
+**The deciding question for any key:** *is this part of the thing the client asked for (→ `data`),
+or info about the response itself (→ top-level / `meta`)?* Above all — **pick one shape and use it on
+every route.** A consistent, boring envelope is worth more than a clever one.
+
+---
+
 ## Best-Practice Checklist
 
 - ✅ **Validate at the edge** — in middleware, before controllers. Controllers assume valid input.
