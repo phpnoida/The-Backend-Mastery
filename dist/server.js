@@ -15,38 +15,95 @@ var catchAsync = (fn) => (req, res, next) => {
 };
 var catchAsync_default = catchAsync;
 
-// src/modules/product/product.controller.ts
-import "express";
-var createProduct = catchAsync_default(
-  async (req, res) => {
-    console.log("add product..");
-  }
+// src/modules/product/product.model.ts
+import {
+  model,
+  Schema
+} from "mongoose";
+var productSchema = new Schema(
+  {
+    title: {
+      type: String,
+      required: true,
+      trim: true
+    },
+    sku: {
+      type: String,
+      required: true
+    },
+    price: {
+      type: Number,
+      required: true,
+      min: 1,
+      max: 1e6
+    },
+    category: {
+      type: String,
+      required: true,
+      enum: {
+        values: ["electronics", "books", "clothing", "food", "toys"],
+        message: "values can be either electronics or books or clothing or food or toys"
+      }
+    },
+    quantity: {
+      type: Number,
+      required: true,
+      min: 0
+    },
+    inStock: {
+      type: Boolean,
+      default: true
+    },
+    tags: [
+      {
+        type: String,
+        default: []
+      }
+    ],
+    description: {
+      type: String,
+      default: ""
+    }
+  },
+  { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } }
 );
-var updateProduct = catchAsync_default(
-  async (req, res) => {
-    console.log("update product..");
-  }
+productSchema.index({
+  title: 1
+});
+productSchema.index(
+  {
+    sku: 1
+  },
+  { unique: true }
 );
-var deleteProduct = catchAsync_default(
-  async (req, res) => {
-    console.log("delete product..");
-  }
-);
-var getAllProducts = catchAsync_default(
-  async (req, res) => {
-    const query = req.query;
-    console.log("getAll products..", query);
-  }
-);
-var getOneProduct = catchAsync_default(
-  async (req, res) => {
-    console.log("get particular product...");
-  }
-);
+var Product = model("Product", productSchema);
 
-// src/middlewares/validateRequest.ts
-import "zod";
-import "express";
+// src/modules/product/product.service.ts
+var productService = {
+  create(data) {
+    console.log("data from service", data);
+    const product = Product.create(data);
+    return product;
+  },
+  findAll(data) {
+    let query = { ...data };
+    console.log("query is", query);
+    const products = Product.find();
+    return products;
+  },
+  findById(id) {
+    const product = Product.findById(id);
+    return product;
+  },
+  update(id, data) {
+    const product = Product.findByIdAndUpdate(id, data, { new: true });
+    return product;
+  },
+  delete(id) {
+    const product = Product.findByIdAndDelete(id);
+    return product;
+  }
+};
 
 // src/utils/AppError.ts
 var AppError = class extends Error {
@@ -63,7 +120,76 @@ var AppError = class extends Error {
 };
 var AppError_default = AppError;
 
+// src/modules/product/product.controller.ts
+var createProduct = catchAsync_default(async (req, res) => {
+  console.log("create product controller..");
+  const body = req.body;
+  const product = await productService.create(body);
+  res.status(201).json({
+    status: "success",
+    meta: {
+      message: "Product Created"
+    },
+    data: product
+  });
+});
+var updateProduct = catchAsync_default(async (req, res) => {
+  console.log("update product controller...");
+  const body = req.body;
+  const { id } = req.params;
+  const product = await productService.update(id, body);
+  if (!product) {
+    throw new AppError_default("Invalid productId", 404);
+  }
+  res.status(200).json({
+    status: "success",
+    meta: {
+      message: "Product Updated"
+    },
+    data: product
+  });
+});
+var deleteProduct = catchAsync_default(async (req, res) => {
+  console.log("delete product controller..");
+  const productId = req.params;
+  const product = await productService.delete(productId.id);
+  if (product === null) {
+    throw new AppError_default("Invalid productId", 404);
+  }
+  res.status(200).json({
+    status: "success",
+    meta: {
+      message: "Product Deleted"
+    }
+  });
+});
+var getAllProducts = catchAsync_default(
+  async (req, res) => {
+    console.log("get all products controller..");
+    const query = req.query;
+    const products = await productService.findAll(query);
+    res.status(200).json({
+      status: "success",
+      data: products
+    });
+  }
+);
+var getOneProduct = catchAsync_default(async (req, res) => {
+  console.log("get one product controller..");
+  const productId = req.params;
+  const product = await productService.findById(productId.id);
+  if (!product) {
+    throw new AppError_default("Invalid productId", 404);
+  }
+  res.status(200).json({
+    status: "success",
+    data: product
+  });
+});
+
 // src/middlewares/validateRequest.ts
+import "zod";
+import "express";
 var validateRequest = (schema, source = "body") => (req, _res, next) => {
   const result = schema.safeParse(req[source]);
   if (!result.success) {
@@ -118,13 +244,8 @@ var productParamsSchema = z.object({
 // src/modules/product/product.route.ts
 var router = Router();
 router.route("/products").post(validateRequest_default(productCreateSchema, "body"), createProduct);
-router.route("/products/:id").patch(
-  validateRequest_default(productUpdateSchema, "body"),
-  validateRequest_default(productParamsSchema, "params"),
-  updateProduct
-);
 router.route("/products").get(validateRequest_default(productQuerySchema, "query"), getAllProducts);
-router.route("/products/:id").get(validateRequest_default(productParamsSchema, "params"), getOneProduct);
+router.route("/products/:id").patch(validateRequest_default(productParamsSchema, "params"), updateProduct).get(validateRequest_default(productParamsSchema, "params"), getOneProduct).delete(validateRequest_default(productParamsSchema, "params"), deleteProduct);
 var product_route_default = router;
 
 // src/middlewares/globalErrorHandler.ts
