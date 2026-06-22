@@ -36,24 +36,77 @@ console.log("Connected\n");
 // Stages: $sort, $limit
 // YOUR ANSWER:
 
+const fn1 = async () => {
+  const data = await Order.aggregate([
+    {
+      $sort: {
+        totalAmount: -1,
+      },
+    },
+    { $limit: 10 },
+  ]);
+  console.log("data1", data);
+};
+// await fn1();
 
 // ─── Q2 ──────────────────────────────────────────────────────────────────────
 // The 10 cheapest orders (totalAmount asc).
 // Stages: $sort, $limit
 // YOUR ANSWER:
-
+const fn2 = async () => {
+  const data = await Order.aggregate([
+    {
+      $sort: {
+        totalAmount: 1,
+      },
+    },
+    {
+      $limit: 10,
+    },
+  ]);
+  console.log("data2", data);
+};
+// await fn2();
 
 // ─── Q3 ──────────────────────────────────────────────────────────────────────
 // Top 5 customers by loyaltyPoints.
 // Stages: $sort, $limit
 // YOUR ANSWER:
 
+const fn3 = async () => {
+  const data = await Customer.aggregate([
+    {
+      $sort: {
+        loyaltyPoints: -1,
+      },
+    },
+    {
+      $limit: 5,
+    },
+  ]);
+  console.log("data3--->", data);
+};
+// await fn3();
 
 // ─── Q4 ──────────────────────────────────────────────────────────────────────
 // The 5 most recently created orders.
 // Stages: $sort (createdAt desc), $limit
 // YOUR ANSWER:
 
+const fn4 = async () => {
+  const data = await Order.aggregate([
+    {
+      $sort: {
+        createdAt: -1,
+      },
+    },
+    {
+      $limit: 5,
+    },
+  ]);
+  console.log("data4-->", data);
+};
+// await fn4();
 
 // ─── Q5 ──────────────────────────────────────────────────────────────────────
 // COMPOUND SORT (tiebreak): products by avgRating desc, and within equal ratings,
@@ -62,6 +115,21 @@ console.log("Connected\n");
 // Hint: { avgRating: -1, reviewCount: -1 } — keys are applied left to right.
 // YOUR ANSWER:
 
+const fn5 = async () => {
+  const data = await Product.aggregate([
+    {
+      $sort: {
+        avgRating: -1,
+        reviewCount: -1,
+      },
+    },
+    {
+      $limit: 10,
+    },
+  ]);
+  console.log("data5-->", data);
+};
+// await fn5();
 
 // ─── Q6 ──────────────────────────────────────────────────────────────────────
 // PAGINATION — page 2, 10 orders per page, newest first.
@@ -69,6 +137,23 @@ console.log("Connected\n");
 // Stages: $sort, $skip, $limit
 // YOUR ANSWER:
 
+const f6 = async () => {
+  const data = await Order.aggregate([
+    {
+      $sort: {
+        createdAt: -1,
+      },
+    },
+    {
+      $skip: 10,
+    },
+    {
+      $limit: 10,
+    },
+  ]);
+  console.log("data6-->", data);
+};
+// await f6();
 
 // ─── Q7 ──────────────────────────────────────────────────────────────────────
 // Demonstrate the BUG: write $limit 5 BEFORE $sort and compare to $sort before $limit.
@@ -76,6 +161,35 @@ console.log("Connected\n");
 // Stages: $limit, $sort   vs   $sort, $limit
 // YOUR ANSWER:
 
+const fn7 = async () => {
+  // it will first fetch first 5 orders and then sort will be based on those first 5 orders
+  const data1 = await Order.aggregate([
+    {
+      $limit: 5,
+    },
+    {
+      $sort: {
+        createdAt: -1,
+      },
+    },
+  ]);
+  console.log("data7--->", data1);
+
+  //   first sort orders means recent order and then get top 5 recent order
+  const data2 = await Order.aggregate([
+    {
+      $sort: {
+        createdAt: -1,
+      },
+    },
+    {
+      $limit: 5,
+    },
+  ]);
+
+  console.log("data2", data2);
+};
+await fn7();
 
 await mongoose.disconnect();
 console.log("\nDone.");

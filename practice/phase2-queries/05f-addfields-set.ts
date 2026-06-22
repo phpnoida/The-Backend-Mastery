@@ -31,32 +31,102 @@ console.log("Connected\n");
 // Add savings = totalMrp - totalAmount to each order, keeping all original fields. Limit 5.
 // Stages: $addFields, $limit
 // YOUR ANSWER:
-
+const fn1 = async () => {
+  const data = await Order.aggregate([
+    {
+      $addFields: {
+        savings: {
+          $subtract: ["$totalMrp", "$totalAmount"],
+        },
+      },
+    },
+    { $limit: 5 },
+  ]);
+  console.log("data1-->", data);
+};
+// await fn1();
 
 // ─── Q2 ──────────────────────────────────────────────────────────────────────
 // Add isHighValue (boolean) = totalAmount > 5000 to each order. Limit 5.
 // Stages: $addFields, $limit
 // YOUR ANSWER:
-
+const fn2 = async () => {
+  const data = await Order.aggregate([
+    {
+      $addFields: {
+        isHighValue: {
+          $gt: ["$totalAmount", 5000],
+        },
+      },
+    },
+    {
+      $limit: 5,
+    },
+  ]);
+  console.log("data2-->", data);
+};
+// await fn2();
 
 // ─── Q3 ──────────────────────────────────────────────────────────────────────
 // Add itemCount = number of items in the order (use $size on the items array). Limit 5.
 // Stages: $addFields, $limit
 // Hint: { $size: "$items" }. (Full array-operator drilling is sheet 05l.)
 // YOUR ANSWER:
-
+const fn3 = async () => {
+  const data = await Order.aggregate([
+    {
+      $addFields: {
+        itemCount: {
+          $size: "$items",
+        },
+      },
+    },
+    {
+      $limit: 5,
+    },
+  ]);
+  console.log("data3-->", data);
+};
+// await fn3();
 
 // ─── Q4 ──────────────────────────────────────────────────────────────────────
 // Inventory: add totalStock = available + reserved + damaged. Limit 5.
 // Stages: $addFields ($add), $limit
 // YOUR ANSWER:
 
+const fn4 = async () => {
+  const data = await InventoryItem.aggregate([
+    {
+      $addFields: {
+        totalStock: {
+          $add: ["$quantityAvailable", "$quantityReserved", "$quantityDamaged"],
+        },
+      },
+    },
+    { $limit: 5 },
+  ]);
+  console.log("data4-->", data);
+};
+// await fn4();
 
 // ─── Q5 ──────────────────────────────────────────────────────────────────────
 // Show $set IS $addFields: redo Q1 using $set instead of $addFields. Same result. Limit 5.
 // Stages: $set, $limit
 // YOUR ANSWER:
-
+const fn5 = async () => {
+  const data = await Order.aggregate([
+    {
+      $set: {
+        savings: {
+          $subtract: ["$totalMrp", "$totalAmount"],
+        },
+      },
+    },
+    { $limit: 5 },
+  ]);
+  console.log("data5-->", data);
+};
+// await fn5();
 
 // ─── Q6 ──────────────────────────────────────────────────────────────────────
 // Overwrite in place: uppercase each order's status. Limit 5.
@@ -64,6 +134,20 @@ console.log("Connected\n");
 // Hint: $set with the SAME key name replaces the field.
 // YOUR ANSWER:
 
+const fn6 = async () => {
+  const data = await Order.aggregate([
+    {
+      $addFields: {
+        status: { $toUpper: "$status" },
+      },
+    },
+    {
+      $limit: 5,
+    },
+  ]);
+  console.log("data6-->", data);
+};
+// await fn6();
 
 // ─── Q7 ──────────────────────────────────────────────────────────────────────
 // THE KILLER USE-CASE — compute then filter on the computed field:
@@ -73,6 +157,28 @@ console.log("Connected\n");
 //       comes first. This "compute → filter" two-step is everywhere in real pipelines.
 // YOUR ANSWER:
 
+const fn7 = async () => {
+  const data = await Order.aggregate([
+    {
+      $addFields: {
+        isHighValue: { $gt: ["$totalAmount", 5000] },
+      },
+    },
+    {
+      $match: {
+        isHighValue: { $eq: true },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        totalCount: { $sum: 1 },
+      },
+    },
+  ]);
+  console.log("data7-->", data);
+};
+await fn7();
 
 await mongoose.disconnect();
 console.log("\nDone.");
