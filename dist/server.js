@@ -34,8 +34,8 @@ var productSchema = new Schema(
     price: {
       type: Number,
       required: true,
-      min: 1,
-      max: 1e6
+      min: [1, "Price must be at least 1"],
+      max: [1e6, "Price cannot exceed 1,000,000"]
     },
     category: {
       type: String,
@@ -81,27 +81,13 @@ var Product = model("Product", productSchema);
 // src/modules/product/product.service.ts
 var productService = {
   create(data) {
-    console.log("data from service", data);
-    const product = Product.create(data);
-    return product;
-  },
-  findAll(data) {
-    let query = { ...data };
-    console.log("query is", query);
-    const products = Product.find();
-    return products;
-  },
-  findById(id) {
-    const product = Product.findById(id);
-    return product;
+    return Product.create(data);
   },
   update(id, data) {
-    const product = Product.findByIdAndUpdate(id, data, { new: true });
-    return product;
-  },
-  delete(id) {
-    const product = Product.findByIdAndDelete(id);
-    return product;
+    return Product.findByIdAndUpdate(id, data, {
+      new: true,
+      runValidators: true
+    });
   }
 };
 
@@ -110,82 +96,57 @@ var AppError = class extends Error {
   statusCode;
   status;
   isOperational;
-  constructor(message, statusCode) {
+  constructor(message, statusCode, isOperational = true) {
     super(message);
     this.statusCode = statusCode;
     this.status = `${statusCode}`.startsWith("4") ? "fail" : "error";
-    this.isOperational = true;
+    this.isOperational = isOperational;
     Error.captureStackTrace(this, this.constructor);
   }
 };
 var AppError_default = AppError;
 
 // src/modules/product/product.controller.ts
-var createProduct = catchAsync_default(async (req, res) => {
-  console.log("create product controller..");
-  const body = req.body;
-  const product = await productService.create(body);
-  res.status(201).json({
-    status: "success",
-    meta: {
-      message: "Product Created"
-    },
-    data: product
-  });
-});
-var updateProduct = catchAsync_default(async (req, res) => {
-  console.log("update product controller...");
-  const body = req.body;
-  const { id } = req.params;
-  const product = await productService.update(id, body);
-  if (!product) {
-    throw new AppError_default("Invalid productId", 404);
-  }
-  res.status(200).json({
-    status: "success",
-    meta: {
-      message: "Product Updated"
-    },
-    data: product
-  });
-});
-var deleteProduct = catchAsync_default(async (req, res) => {
-  console.log("delete product controller..");
-  const productId = req.params;
-  const product = await productService.delete(productId.id);
-  if (product === null) {
-    throw new AppError_default("Invalid productId", 404);
-  }
-  res.status(200).json({
-    status: "success",
-    meta: {
-      message: "Product Deleted"
-    }
-  });
-});
-var getAllProducts = catchAsync_default(
+var createProduct = catchAsync_default(
   async (req, res) => {
-    console.log("get all products controller..");
-    const query = req.query;
-    const products = await productService.findAll(query);
-    res.status(200).json({
+    console.log("createProduct controller..");
+    const data = await productService.create(req.body);
+    res.status(201).json({
       status: "success",
-      data: products
+      msg: "Product Created",
+      data
     });
   }
 );
-var getOneProduct = catchAsync_default(async (req, res) => {
-  console.log("get one product controller..");
-  const productId = req.params;
-  const product = await productService.findById(productId.id);
-  if (!product) {
-    throw new AppError_default("Invalid productId", 404);
+var updateProduct = catchAsync_default(
+  async (req, res) => {
+    console.log("updateProduct controller...");
+    const data = await productService.update(req.params.id, req.body);
+    if (!data) {
+      throw new AppError_default("Invalid ProductId", 404);
+    }
+    res.status(200).json({
+      status: "success",
+      msg: "Product Updated",
+      data
+    });
   }
-  res.status(200).json({
-    status: "success",
-    data: product
-  });
-});
+);
+var deleteProduct = catchAsync_default(
+  async (req, res) => {
+    console.log("deleteProduct controller...");
+  }
+);
+var getAllProducts = catchAsync_default(
+  async (req, res) => {
+    console.log("getAllProducts controller...");
+  }
+);
+var getOneProduct = catchAsync_default(
+  async (req, res) => {
+    console.log("getOneProduct controller...");
+  }
+);
 
 // src/middlewares/validateRequest.ts
 import "zod";
@@ -213,7 +174,7 @@ var productCreateSchema = z.object({
     /^[A-Z0-9]+(-[A-Z0-9]+)*$/,
     "SKU must be uppercase letters/digits in hyphen-separated groups (e.g. KB-100)"
   ),
-  price: z.number("Price is required").gt(0, "Price must be greater than 0").max(1e6, "Price cannot exceed 1,000,000"),
+  price: z.number("Price is required").gte(1, "Price must be greater than 1").max(1e6, "Price cannot exceed 1,000,000"),
   category: z.enum(["electronics", "books", "clothing", "food", "toys"], {
     error: "values can be either electronics or books or clothing or food or toys"
   }),
@@ -243,13 +204,17 @@ var productParamsSchema = z.object({
 
 // src/modules/product/product.route.ts
 var router = Router();
-router.route("/products").post(validateRequest_default(productCreateSchema, "body"), createProduct);
-router.route("/products").get(validateRequest_default(productQuerySchema, "query"), getAllProducts);
-router.route("/products/:id").patch(validateRequest_default(productParamsSchema, "params"), updateProduct).get(validateRequest_default(productParamsSchema, "params"), getOneProduct).delete(validateRequest_default(productParamsSchema, "params"), deleteProduct);
+router.route("/products").post(validateRequest_default(productCreateSchema, "body"), createProduct).get(validateRequest_default(productQuerySchema, "query"), getAllProducts);
+router.route("/products/:id").get(validateRequest_default(productParamsSchema, "params"), getOneProduct).delete(validateRequest_default(productParamsSchema, "params"), deleteProduct).patch(
+  validateRequest_default(productParamsSchema, "params"),
+  validateRequest_default(productUpdateSchema, "body"),
+  updateProduct
+);
 var product_route_default = router;
 
 // src/middlewares/globalErrorHandler.ts
 import "express";
+import mongoose from "mongoose";
 
 // src/config/env.ts
 import dotenv from "dotenv";
@@ -263,6 +228,21 @@ var ENV = {
 var env_default = ENV;
 
 // src/middlewares/globalErrorHandler.ts
+var normalizeError = (err) => {
+  if (err instanceof mongoose.Error.ValidationError) {
+    const messages = Object.values(err.errors).map((e) => e.message).join(", ");
+    return new AppError_default(messages, 400);
+  }
+  if (err instanceof mongoose.Error.CastError) {
+    return new AppError_default(`Invalid ${err.path}: ${String(err.value)}`, 400);
+  }
+  if (err.code === 11e3) {
+    const field = Object.keys(err.keyValue ?? {})[0] ?? "field";
+    return new AppError_default(`${field} already exists`, 409);
+  }
+  if (err instanceof AppError_default) return err;
+  return new AppError_default(err.message || "Internal Server Error", 500, false);
+};
 var sendDevError = (err, res) => {
   res.status(err.statusCode).json({
     status: err.status,
@@ -286,14 +266,12 @@ var sendProdError = (err, res) => {
   }
 };
 var globalErrorHandler = (err, _req, res, _next) => {
-  const error = err instanceof AppError_default ? err : new AppError_default(err.message || "Internal Server Error", 500);
+  const error = normalizeError(err);
   if (env_default.NODE_ENV === "development") {
     sendDevError(error, res);
     return;
-  } else {
-    sendProdError(error, res);
-    return;
   }
+  sendProdError(error, res);
 };
 var globalErrorHandler_default = globalErrorHandler;
 
@@ -310,13 +288,13 @@ app.use(globalErrorHandler_default);
 var app_default = app;
 
 // src/config/mongoose.ts
-import mongoose from "mongoose";
+import mongoose2 from "mongoose";
 var connectDB = async () => {
-  mongoose.connection.on("disconnected", () => {
+  mongoose2.connection.on("disconnected", () => {
     console.log("Mongoose lost connection to the database!");
   });
   try {
-    await mongoose.connect(`${env_default.MONGO_URI}`, {
+    await mongoose2.connect(`${env_default.MONGO_URI}`, {
       // These are the important production options
       maxPoolSize: 10,
       // max simultaneous connections in pool

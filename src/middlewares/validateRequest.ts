@@ -1,13 +1,17 @@
 // src/middlewares/validateRequest.ts
 import { type ZodType } from "zod";
-import { type Request, type Response, type NextFunction } from "express";
+import { type RequestHandler } from "express";
 import AppError from "@/utils/AppError";
 
 type RequestSource = "body" | "query" | "params";
 
+// Return RequestHandler<any, any, any, any> so this middleware does NOT pin the
+// Request generics. When chained with a typed controller in the same `.get(...)`
+// call, TS then infers ReqQuery/ReqBody from the controller (e.g. ProductQueryDto)
+// instead of Express's default `ParsedQs`, which would not be assignable.
 const validateRequest =
-  (schema: ZodType, source: RequestSource = "body") =>
-  (req: Request, _res: Response, next: NextFunction) => {
+  (schema: ZodType, source: RequestSource = "body"): RequestHandler<any, any, any, any> =>
+  (req, _res, next) => {
     const result = schema.safeParse(req[source]);
 
     if (!result.success) {

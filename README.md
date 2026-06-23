@@ -116,6 +116,54 @@ these types describe data that is **guaranteed valid** — no `as`, no lying to 
 
 ---
 
+## 3b. `src/types/api.ts` — typed **responses** (the other half)
+
+**One line:** *`TypedRequest*` types what comes IN; `ApiResponse<T>` types what goes OUT — so
+`res.json(...)` is compiler-checked and the envelope can't drift (`msg` vs `message`) across endpoints.*
+
+```ts
+// src/types/api.ts
+export type ApiResponse<T> = {
+  status: "success";
+  message: string;
+  data: T;
+};
+
+export type ApiError = {
+  status: "fail" | "error";
+  message: string;
+};
+```
+
+**How to use it** — Express's `Response` is generic too; that second slot is the *same* `ResBody`
+from `Request<Params, ResBody, ReqBody, Query>`. Typing it turns `res.json()` into a contract:
+
+```ts
+import type { Response } from "express";
+import type { ApiResponse } from "@/types/api";
+
+async (req: TypedRequestBody<ProductCreateDto>, res: Response<ApiResponse<ProductDoc>>) => {
+  const data = await productService.create(req.body);
+  res.status(201).json({ status: "success", message: "Product created", data }); // ✅ shape enforced
+  // res.json({ msg: "..." });   // ❌ compile error — typo + missing fields caught
+}
+```
+
+For the list endpoint, `T` becomes the paginated shape:
+`Response<ApiResponse<{ items: ProductDoc[]; page: number; limit: number; total: number }>>`.
+
+**Naming convention (what pros use):** name type files by **concern**, not by HTTP class.
+- `express.ts` → request-side helpers (`TypedRequest*`) — wraps Express's `Request`. *(keep this name)*
+- `api.ts` → response-side envelope (`ApiResponse<T>`, `ApiError`) — the wire contract. *(most common)*
+- ❌ `request.ts` + `response.ts` (split by HTTP side) is rare and over-granular — avoid.
+- `*.d.ts` (e.g. `express.d.ts`) is the convention only when a file **augments** Express
+  (e.g. `declare global { namespace Express { interface Request { validated?: unknown } } }`).
+
+> **Mental model:** typed `Request` + typed `Response` = the whole HTTP contract is compiler-enforced,
+> edge to edge. That is the senior-standard for an Express + TS service.
+
+---
+
 ## 4. `validateRequest.ts` — the bouncer (write-back, Express-5-safe)
 
 **One line:** *Runs a Zod schema against one part of the request; bad → stop with a clean 400; good → overwrite that native slot (`req.body`/`params`/`query`) with the clean, coerced value and continue.*

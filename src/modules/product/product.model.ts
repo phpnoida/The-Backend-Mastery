@@ -19,8 +19,8 @@ const productSchema = new Schema(
     price: {
       type: Number,
       required: true,
-      min: 1,
-      max: 1000000,
+      min: [1, "Price must be at least 1"],
+      max: [1000000, "Price cannot exceed 1,000,000"],
     },
     category: {
       type: String,

@@ -15,7 +15,7 @@ export const productCreateSchema = z.object({
     ),
   price: z
     .number("Price is required")
-    .gt(0, "Price must be greater than 0")
+    .gte(1, "Price must be greater than 1")
     .max(1000000, "Price cannot exceed 1,000,000"),
   category: z.enum(["electronics", "books", "clothing", "food", "toys"], {
     error:
