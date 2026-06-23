@@ -1,536 +1,415 @@
-# Request Validation with Zod — Type-Safe API Boundaries
+# 🧠 Zod + Express CRUD — One Full Picture (Reference)
 
-This branch (`feature/validation-zod-datastructure`) demonstrates the **production pattern for
-validating incoming HTTP requests** with [Zod](https://zod.dev) on top of the Express 5 + TypeScript
-boilerplate.
-
-The core idea: **one Zod schema per resource is the single source of truth** — it validates data at
-runtime *and* generates the TypeScript types (DTOs) your controllers and services consume. No
-duplicate `interface` definitions, no untyped `req.body`, no validation logic scattered across
-controllers.
-
-Stack: `zod@4` · `express@5` · `typescript@6` (strict)
+> Read top → bottom once. Every block has a **one-line plain-English** summary, then the code.
+> This is the **final, coherent design** we landed on:
+> *validate at the edge → write the clean data back to its native slot → type the handler with
+> `TypedRequest*` → read it with **zero `as` casts**.*
 
 ---
 
-## The Validation Flow
+## 1. The 30-second mental model
+
+A request is a parcel on an assembly line. Each station does **one** job, then hands it on:
 
 ```
-            ┌─────────────────────────── route layer ───────────────────────────┐
-HTTP request ──▶ validateRequest(schema, "body" | "query" | "params")
-                        │
-                        ├─ schema.safeParse(req[source])
-                        │
-              fail ◀────┤────▶ ok
-                │              │
-   next(new AppError(400)) │  req[source] = parsed (coerced + defaults applied)
-                │              │
-                ▼              ▼
-        globalErrorHandler   typed controller (req.body/params/query fully typed)
+HTTP request
+   │
+   ▼
+[ ROUTE ]            "which URL + method? send it down the right line"
+   │
+   ▼
+[ validateRequest ] "bouncer: clean? bad → 400 STOP.  good → write clean data back to req.body/params/query"
+   │
+   ▼
+[ catchAsync ]      "safety wrapper: if the async handler throws, forward to the error handler"
+   │
+   ▼
+[ CONTROLLER ]      "translator: read typed req → call ONE service fn → shape the HTTP reply"
+   │
+   ▼
+[ SERVICE ]         "worker: pure DB logic, knows nothing about req/res"
+   │
+   ▼
+[ MODEL ]           "blueprint: the MongoDB shape + DB guarantees (unique, required)"
+   │
+   ▼
+MongoDB
 ```
 
-Validation happens **at the edge** — before any controller or service runs. By the time your
-business logic executes, the data is already shape-checked, coerced, and typed.
+**Golden rule:** bad data dies at the bouncer (step 2). By the time the controller runs, the data
+is **clean *and* correctly typed** — so no validation and no `as` casts live in the controller.
+
+| Layer | One line |
+|-------|----------|
+| **schema** (Zod) | The rulebook for incoming data — and the source of every TS type via `z.infer`. |
+| **types** (`TypedRequest*`) | Tiny aliases that tell TS the shape of `req.body`/`params`/`query`. |
+| **validateRequest** | Bouncer — checks the rulebook, 400s bad input, writes clean data back to its native slot. |
+| **catchAsync** | Try/catch you don't have to write — forwards async errors to the global handler. |
+| **route** | Switchboard — maps URL+method to `[validator(s) → controller]`. |
+| **controller** | Translator — typed HTTP in, one service call, HTTP out. No DB, no rules. |
+| **service** | Worker — pure DB logic. No `req`, no `res`, no status codes. |
+| **model** | Blueprint — Mongoose shape + last-line DB defense (`unique`, `required`). |
 
 ---
 
-## Step 1 — Write the schema (`user.schema.ts`)
+## 2. `product.schema.ts` — the rulebook (types are born here)
 
-Define one schema per request shape: **create**, **update**, **query**, **params**.
+**One line:** *Zod schemas validate data at runtime; `z.infer` turns each schema into a TS type for free — write the rule once, the type follows automatically.*
 
 ```ts
 import { z } from "zod";
 
-// POST body — creating a user
-const userCreateSchema = z.object({
-  fName: z.string().min(2).max(50),
-  lName: z.string().min(2).max(50).optional(),
-  email: z.email(),                                    // ① v4 top-level validator
-  phone: z.string().regex(/^\d{10}$/, "phone must be exactly 10 digits"), // ② string, not number
+export const productCreateSchema = z.object({
+  title:    z.string().trim().min(2).max(100),
+  sku:      z.string().regex(/^[A-Z0-9]+(-[A-Z0-9]+)*$/),
+  price:    z.number().gt(0).max(1_000_000),
+  category: z.enum(["electronics", "books", "clothing", "food", "toys"]),
+  quantity: z.number().int().min(0),
+  inStock:  z.boolean().default(true),
+  tags:     z.array(z.string().min(1).max(20)).max(10).default([]),
+  description: z.string().max(500).optional(),
 });
 
-// PATCH body — every field optional, derived from create (DRY)
-const userUpdateSchema = userCreateSchema.partial();
+export const productUpdateSchema = productCreateSchema.partial(); // PATCH: all optional (DRY)
 
-// GET ?page=&limit=&sort=&sortBy= — query values always arrive as strings
-const userQuerySchema = z.object({
-  page: z.coerce.number().int().min(1).default(1),     // ③ coerce "2" → 2
+export const productQuerySchema = z.object({   // query values arrive as STRINGS → coerce
+  page:  z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(10),
-  sort: z.enum(["asc", "desc"]).default("asc"),
-  sortBy: z.enum(["fName", "lName", "email", "phone"]).default("fName"),
+  sort:   z.enum(["asc", "desc"]).default("desc"),
+  sortBy: z.enum(["title", "price", "createdAt"]).default("createdAt"),
+  category: z.enum(["electronics","books","clothing","food","toys"]).optional(),
+  minPrice: z.coerce.number().min(0).optional(),
+  maxPrice: z.coerce.number().min(0).optional(),
+  search:   z.string().trim().optional(),
 });
 
-// :_id route param — Mongo ObjectId (24 hex chars)
-const userParamsSchema = z.object({
-  _id: z.string().regex(/^[a-f\d]{24}$/i, "invalid id"), // ④ stricter than .length(24)
+export const productParamsSchema = z.object({
+  id: z.string().regex(/^[a-f\d]{24}$/i),       // 24-char Mongo ObjectId
 });
+
+// 🔑 types DERIVED from schemas — one source of truth, no drift
+export type ProductCreateDto = z.infer<typeof productCreateSchema>;
+export type ProductUpdateDto = z.infer<typeof productUpdateSchema>;
+export type ProductQueryDto  = z.infer<typeof productQuerySchema>;
+export type ProductParamDto  = z.infer<typeof productParamsSchema>;
 ```
-
-### Why these differ from the "first draft"
-
-| # | Common mistake | Why it's wrong | Fix |
-|---|----------------|----------------|-----|
-| ① | `z.string().email()` | Deprecated in Zod **v4** | `z.email()` (top-level) |
-| ② | `z.coerce.number().min(10).max(10)` for phone | On a *number*, `.min/.max` bound the **value**, not the digit count — this only accepts the number `10` | `z.string().regex(/^\d{10}$/)` |
-| ③ | `z.number()` for `page`/`limit` | Query params are **strings** (`?page=2` → `"2"`), so a plain number schema always fails | `z.coerce.number()` |
-| ④ | `z.string().min(24).max(24)` | Accepts any 24-char string, including non-hex | `.regex(/^[a-f\d]{24}$/i)` |
-
-> `.min(24).max(24)` on a **string** *does* check length (string `.min/.max` = length), so it wasn't
-> broken — but a regex actually validates the ObjectId format. On a **number** the same methods mean
-> something completely different. Know which type you're constraining.
 
 ---
 
-## Step 2 — Infer the DTOs
+## 3. `src/types/express.ts` — typed-request aliases (restore this file)
 
-Don't hand-write interfaces. Derive the types straight from the schemas with `z.infer` so they can
-**never drift** out of sync with validation.
+**One line:** *Thin shortcuts over Express's built-in `Request<Params, ResBody, ReqBody, Query>` generics so a handler can say "my body is `ProductCreateDto`" without writing the ugly 4-slot generic by hand.*
 
 ```ts
-type UserCreateDto = z.infer<typeof userCreateSchema>;
-type UserUpdateDto = z.infer<typeof userUpdateSchema>;
-type UserQueryDto = z.infer<typeof userQuerySchema>;
-type UserParamsDto = z.infer<typeof userParamsSchema>;
+import { type Request } from "express";
 
-export {
-  userCreateSchema,
-  userUpdateSchema,
-  userQuerySchema,
-  userParamsSchema,
-  type UserCreateDto,
-  type UserUpdateDto,
-  type UserQueryDto,
-  type UserParamsDto,
-};
+export type TypedRequestBody<T>   = Request<{}, {}, T>;          // typed req.body
+export type TypedRequestParams<T> = Request<T>;                 // typed req.params
+export type TypedRequestQuery<T>  = Request<{}, {}, {}, T>;     // typed req.query
+export type TypedRequest<P, B, Q> = Request<P, {}, B, Q>;       // typed params + body + query
 ```
 
-`UserQueryDto.page` is typed as `number` (the **output** type, after coercion + defaults), even
-though the wire value was a string. `z.infer` always gives you the parsed shape — exactly what your
-controller receives.
+**Why these exist:** Express's generic order is `Request<Params, ResBody, ReqBody, Query>` —
+unintuitive and noisy. These aliases name the common cases so the controllers stay readable.
+Because `validateRequest` writes the *clean* data back to `req.body`/`params`/`query` (next step),
+these types describe data that is **guaranteed valid** — no `as`, no lying to the compiler.
 
 ---
 
-## Step 3 — The `validateRequest` middleware
+## 4. `validateRequest.ts` — the bouncer (write-back, Express-5-safe)
 
-A single reusable middleware factory: pass it a schema and which part of the request to validate.
+**One line:** *Runs a Zod schema against one part of the request; bad → stop with a clean 400; good → overwrite that native slot (`req.body`/`params`/`query`) with the clean, coerced value and continue.*
 
 ```ts
-// src/middlewares/validateRequest.ts
-import { type ZodType } from "zod";
+import { z } from "zod";
 import { type Request, type Response, type NextFunction } from "express";
 import AppError from "@/utils/AppError";
 
 type RequestSource = "body" | "query" | "params";
 
 const validateRequest =
-  (schema: ZodType, source: RequestSource = "body") =>
+  <T extends z.ZodType>(schema: T, source: RequestSource = "body") =>
   (req: Request, _res: Response, next: NextFunction) => {
     const result = schema.safeParse(req[source]);
 
     if (!result.success) {
       const message = result.error.issues
-        .map((issue) => `${issue.path.join(".") || source}: ${issue.message}`)
+        .map((i) => `${i.path.join(".") || source}: ${i.message}`)
         .join("; ");
-      return next(new AppError(message, 400));
+      return next(new AppError(message, 400));   // ⛔ controller never runs
     }
 
-    // Express 5: req.query / req.params are GETTER-ONLY — `req.query = ...` throws.
-    // defineProperty shadows the getter with the parsed (coerced + defaulted) value
-    // so downstream controllers see the clean data, not the raw strings.
+    // Write the CLEAN value back to its native slot.
+    // ⚠️ Express 5: req.query / req.params are GETTER-ONLY — `req.query = ...` THROWS.
+    // Object.defineProperty shadows the getter, so this is safe for all three sources.
     Object.defineProperty(req, source, {
-      value: result.data,
+      value: result.data,        // coerced numbers + applied defaults
       writable: true,
       configurable: true,
     });
-
-    next();
+    next();                       // ✅ pass the clean parcel on
   };
 
 export default validateRequest;
 ```
 
-### Why it's written this way
+**Two jobs:** (1) **reject** bad input → 400 *before* the controller; (2) **transform** good input
+(coerce strings→numbers, fill defaults) and hand it on. Because it writes back to the *native*
+slot, you can stack multiple validators on one route and none clobbers another.
 
-- **`safeParse`, not `parse`** — `parse` *throws* a `ZodError`. `safeParse` returns a discriminated
-  `{ success, data | error }` result, so we control how the error becomes an `AppError`. No `try/catch`.
-- **Re-assigning `req[source]`** — this is the step most tutorials forget. After coercion (`"2"` → `2`)
-  and defaults (`limit` → `10`), the **parsed** data only exists in `result.data`. If you don't write
-  it back, the controller still reads the raw, uncoerced request.
-- **`Object.defineProperty` instead of `req.query = result.data`** — ⚠️ **Express 5 changed `req.query`
-  and `req.params` into read-only getters.** Direct assignment throws `Cannot set property query of
-  #<IncomingMessage> which has only a getter`. `defineProperty` installs an own property on the
-  request that shadows the prototype getter. This is the #1 Express-4-to-5 validation bug — most
-  blog posts predate Express 5 and use the broken assignment.
-- **`_res`** — unused, prefixed with `_` to satisfy `noUnusedParameters` (on in this repo's tsconfig).
-
-> **Level-up (production APIs):** clients usually want a structured `errors[]`, not one joined string.
-> Extend `AppError` to carry a `details` field and pass `z.flattenError(result.error).fieldErrors`
-> into it, then surface that in `globalErrorHandler`. Kept simple here so the flow stays readable.
+> 💡 This is why we DON'T use a single `req.validated` bucket: on PATCH (params + body) the second
+> validator would overwrite the first. Writing back to `req.params` *and* `req.body` keeps both.
 
 ---
 
-## Step 4 — Typed controllers (`user.controller.ts`)
+## 5. `catchAsync.ts` — the try/catch you don't write
 
-Use plain `Request`/`Response` from Express. Zod already validated the request at the route (Step 5),
-so inside the controller you read the data and bind the **inferred DTO** with an `as` cast. Every
-handler stays wrapped in `catchAsync` so thrown/rejected errors reach the global handler.
+**One line:** *Wraps an async handler so any thrown error (or rejected promise) is auto-forwarded to Express's global error handler — and its generics preserve your `TypedRequest` types.*
 
 ```ts
-import { type Request, type Response } from "express";
-import catchAsync from "@/utils/catchAsync";
-import {
-  type UserCreateDto,
-  type UserUpdateDto,
-  type UserQueryDto,
-  type UserParamsDto,
-} from "./user.schema";
+import { type Request, type Response, type NextFunction } from "express";
 
-// body validated upstream → bind the DTO
-export const createUser = catchAsync(async (req: Request, res: Response) => {
-  const body = req.body as UserCreateDto;
-  res.status(201).json({ status: "success", data: body });
-});
+// Generic <P, ResBody, ReqBody, ReqQuery> matches Express's Request generics,
+// so the typed request you pass in stays typed inside the handler.
+const catchAsync =
+  <P = any, ResBody = any, ReqBody = any, ReqQuery = any>(
+    fn: (req: Request<P, ResBody, ReqBody, ReqQuery>, res: Response, next: NextFunction) => Promise<any>
+  ) =>
+  (req: Request<P, ResBody, ReqBody, ReqQuery>, res: Response, next: NextFunction) => {
+    fn(req, res, next).catch(next);   // any throw/reject → next(err) → globalErrorHandler
+  };
 
-// query values are coerced (page/limit are numbers here) — see the ParsedQs note below
-export const listUsers = catchAsync(async (req: Request, res: Response) => {
-  const query = req.query as unknown as UserQueryDto;
-  res.status(200).json({ status: "success", query });
-});
-
-// update reads BOTH the param and the body — one cast per source
-export const updateUser = catchAsync(async (req: Request, res: Response) => {
-  const { _id } = req.params as UserParamsDto;
-  const body = req.body as UserUpdateDto;
-  res.status(200).json({ status: "success", id: _id, data: body });
-});
-
-export const deleteUser = catchAsync(async (req: Request, res: Response) => {
-  const { _id } = req.params as UserParamsDto;
-  res.status(204).json({ status: "success", id: _id });
-});
+export default catchAsync;
 ```
 
-### The `as` is honest — because validation already ran
-
-Express types `req.body` as `any` (middleware runs at **runtime**; types are **compile-time**, so TS
-can't see that `validateRequest` cleaned the data). The cast is how you carry Zod's runtime guarantee
-into the type system — safe **only because the middleware ran first**:
-
-| Situation | Write | Why it's safe |
-|-----------|-------|---------------|
-| `validateRequest` ran on the route | `const body = req.body as Dto` | cast states a guarantee that already holds |
-| No middleware on that route | `const body = schema.parse(req.body)` | validates itself; type comes from the return |
-| never | `as` with **no** validation anywhere | an unchecked lie — runtime bug waiting to happen |
-
-> **Why `req.query` needs `as unknown as Dto`** (the double cast): Express 5 types `req.query` as
-> `ParsedQs` (everything string-ish). Your schema **coerces** `page`/`limit` to numbers, so the DTO
-> and `ParsedQs` don't overlap and TS needs the `unknown` hop. `req.body` (typed `any`) and
-> `req.params` (a string index signature) don't need it.
-
-> **Don't build custom `Request<...>` typing helpers.** It's tempting to wrap these casts in generic
-> request types so `req.body` is "auto-typed" — but that adds autocomplete and **zero** runtime safety
-> (Zod owns safety), hides the exact same assertion, and breaks on coerced query types. Plain
-> `Request` + an explicit `as` is what most Express + TS codebases use. Keep it visible.
-
-> **At scale:** when `as Dto` in every file gets repetitive (~100 controllers), centralize it once — a
-> typed **route factory** (`route({ body: schema }, handler)` that parses + types in one place), or a
-> framework that owns validation→typing end-to-end (**Fastify** zod type-provider, **NestJS** pipes,
-> **tRPC**). Learn the explicit pattern now so you recognize what those tools automate later.
+**Why:** without it, every async handler needs its own `try { } catch (e) { next(e) }`. This
+removes that boilerplate from all five controllers — throw an `AppError` and forget it.
 
 ---
 
-## Step 5 — Wire validation into routes (`user.route.ts`)
+## 6. `product.controller.ts` — the translator (zero `as`)
 
-`validateRequest` runs **before** the controller. Validate multiple sources by chaining it — e.g.
-an update needs both the `:_id` param *and* the body checked:
+**One line:** *Each handler is typed with a `TypedRequest*`, reads the already-clean `req.body`/`params`/`query` directly, calls ONE service fn, and shapes the response — no DB code, no validation, no casts.*
+
+```ts
+import catchAsync from "@/utils/catchAsync";
+import AppError from "@/utils/AppError";
+import { productService } from "./product.service";
+import type {
+  TypedRequestBody, TypedRequestParams, TypedRequestQuery, TypedRequest,
+} from "@/types/express";
+import type {
+  ProductCreateDto, ProductUpdateDto, ProductQueryDto, ProductParamDto,
+} from "./product.schema";
+import type { Response } from "express";
+
+// CREATE — body is typed, already validated
+export const createProduct = catchAsync(
+  async (req: TypedRequestBody<ProductCreateDto>, res: Response) => {
+    const product = await productService.create(req.body);   // req.body: ProductCreateDto ✅
+    res.status(201).json({ status: "success", data: product });
+  }
+);
+
+// LIST — query is coerced + defaulted by the schema
+export const getAllProducts = catchAsync(
+  async (req: TypedRequestQuery<ProductQueryDto>, res: Response) => {
+    const result = await productService.findAll(req.query); // req.query.page is a number ✅
+    res.status(200).json({ status: "success", ...result });
+  }
+);
+
+// READ ONE — missing → 404 (not 500)
+export const getOneProduct = catchAsync(
+  async (req: TypedRequestParams<ProductParamDto>, res: Response) => {
+    const product = await productService.findById(req.params.id);
+    if (!product) throw new AppError("Product not found", 404);
+    res.status(200).json({ status: "success", data: product });
+  }
+);
+
+// UPDATE — params AND body both typed (both were validated in the route)
+export const updateProduct = catchAsync(
+  async (req: TypedRequest<ProductParamDto, ProductUpdateDto, never>, res: Response) => {
+    const product = await productService.update(req.params.id, req.body);
+    if (!product) throw new AppError("Product not found", 404);
+    res.status(200).json({ status: "success", data: product });
+  }
+);
+
+// DELETE — 204 = success, NO body
+export const deleteProduct = catchAsync(
+  async (req: TypedRequestParams<ProductParamDto>, res: Response) => {
+    const product = await productService.delete(req.params.id);
+    if (!product) throw new AppError("Product not found", 404);
+    res.status(204).send();
+  }
+);
+```
+
+**Three rules a controller obeys:** (1) never touch the DB directly — call a service; (2) never
+re-validate — that happened at the edge; (3) a missing record → `throw new AppError(msg, 404)`,
+which `catchAsync` forwards to the global handler.
+
+> 🧠 **`never` one-liner:** in `TypedRequest<Params, Body, Query>`, a slot set to `never` means
+> *"this endpoint accepts nothing here."* PATCH has no query string → query is `never`. It's a
+> deliberate "nothing belongs here" — stronger and clearer than a neutral empty `{}`.
+
+---
+
+## 7. `product.route.ts` — the switchboard
+
+**One line:** *Maps each URL+method to a chain `[validator(s) → controller]` — read a route line left-to-right and you see the whole pipeline for that request.*
 
 ```ts
 import { Router } from "express";
 import validateRequest from "@/middlewares/validateRequest";
+import * as ctrl from "./product.controller";
 import {
-  userCreateSchema,
-  userUpdateSchema,
-  userQuerySchema,
-  userParamsSchema,
-} from "./user.schema";
-import { createUser, listUsers, updateUser, deleteUser } from "./user.controller";
+  productCreateSchema, productUpdateSchema,
+  productQuerySchema, productParamsSchema,
+} from "./product.schema";
 
 const router = Router();
 
-router
-  .route("/users")
-  .post(validateRequest(userCreateSchema), createUser)          // defaults to "body"
-  .get(validateRequest(userQuerySchema, "query"), listUsers);
+router.route("/products")
+  .post(validateRequest(productCreateSchema, "body"),  ctrl.createProduct)
+  .get (validateRequest(productQuerySchema,  "query"), ctrl.getAllProducts);
 
-router
-  .route("/users/:_id")
-  .patch(
-    validateRequest(userParamsSchema, "params"),                // ① check the id
-    validateRequest(userUpdateSchema),                          // ② then the body
-    updateUser
-  )
-  .delete(validateRequest(userParamsSchema, "params"), deleteUser);
+router.route("/products/:id")
+  .get   (validateRequest(productParamsSchema, "params"), ctrl.getOneProduct)
+  .patch (
+    validateRequest(productParamsSchema, "params"),   // ① validate the id  → writes req.params
+    validateRequest(productUpdateSchema, "body"),     // ② validate the body → writes req.body
+    ctrl.updateProduct)                               // both survive (native-slot write-back)
+  .delete(validateRequest(productParamsSchema, "params"), ctrl.deleteProduct);
 
 export default router;
 ```
 
-The router is mounted under `/api/v1` in [`src/app.ts`](src/app.ts), so the full paths are
-`/api/v1/users` and `/api/v1/users/:_id`.
+**Read it like a sentence:** "POST /products → validate body → run createProduct." PATCH chains
+**two** validators; thanks to native-slot write-back, both `req.params` and `req.body` arrive clean.
 
 ---
 
-## Module Skeleton — Reference Template
+## 8. `product.service.ts` — the worker
 
-A complete `user` module with the **logic stubbed out** — copy this shape for any new resource.
-Five files, each with one job: **model → schema → service → controller → route**.
-
-### Naming: controller vs service
-
-The two layers use **different verbs on purpose** so they never read as duplicates:
-
-| Endpoint | Controller (HTTP action) | Service (data operation) |
-|----------|--------------------------|--------------------------|
-| `POST /users` | `createUser` | `userService.create` |
-| `GET /users` | `getUsers` | `userService.findAll` |
-| `GET /users/:_id` | `getUser` | `userService.findById` |
-| `PATCH /users/:_id` | `updateUser` | `userService.update` |
-| `DELETE /users/:_id` | `deleteUser` | `userService.remove` |
-
-- **Controller** names describe the **HTTP intent** ("handle the create-user request").
-- **Service** names describe the **persistence intent** ("find the user in Mongo"). Group them under
-  one `userService` object so call sites read `userService.findById(id)` — the resource lives in the
-  object name, not repeated in every method.
-
-### `user.model.ts` — Mongoose model (types inferred, never hand-written)
+**One line:** *Pure database logic — takes plain typed data, returns documents/null, and knows nothing about HTTP (so it's reusable from a CLI, a cron job, or a test).*
 
 ```ts
-import { Schema, model, type InferSchemaType, type HydratedDocument } from "mongoose";
+import { Product, type ProductDoc } from "./product.model";
+import type { ProductCreateDto, ProductUpdateDto, ProductQueryDto } from "./product.schema";
 
-const userSchema = new Schema(
-  {
-    fName: { type: String, required: true, trim: true },
-    lName: { type: String, trim: true },
-    email: { type: String, required: true, unique: true, lowercase: true },
-    phone: { type: String, required: true },
-  },
-  { timestamps: true } // adds createdAt / updatedAt
-);
+export const productService = {
+  create:   (data: ProductCreateDto): Promise<ProductDoc> => Product.create(data),
+  findById: (id: string) => Product.findById(id),
 
-export type UserType = InferSchemaType<typeof userSchema>; // plain object shape
-export type UserDoc = HydratedDocument<UserType>;          // a live document (_id, .save(), ...)
+  // runValidators re-checks Mongoose rules on update — keep it ON
+  update: (id: string, data: ProductUpdateDto) =>
+    Product.findByIdAndUpdate(id, data, { new: true, runValidators: true }),
 
-export const User = model("User", userSchema);
-```
+  delete: (id: string) => Product.findByIdAndDelete(id),
 
-### `user.schema.ts` — Zod (request validation + DTOs)
-
-Exactly **Step 1 + Step 2** above: the Zod schemas and their `z.infer` DTOs
-(`UserCreateDto`, `UserUpdateDto`, `UserQueryDto`, `UserParamsDto`).
-
-### `user.service.ts` — the data layer (this is where autocomplete lives)
-
-```ts
-import { User, type UserDoc } from "./user.model";
-import type { UserCreateDto, UserUpdateDto, UserQueryDto } from "./user.schema";
-
-// Methods named after the DATA operation, grouped under one object.
-// The explicit return types (UserDoc / UserDoc | null) are what give CALLERS autocomplete.
-export const userService = {
-  create(data: UserCreateDto): Promise<UserDoc> {
-    // your logic goes here →  return User.create(data);
-  },
-
-  findAll(query: UserQueryDto): Promise<UserDoc[]> {
-    // your logic goes here →  build filter from query, then User.find(filter).sort(...).skip(...).limit(...)
-  },
-
-  findById(id: string): Promise<UserDoc | null> {
-    // your logic goes here →  return User.findById(id);   // null when missing → controller makes it a 404
-  },
-
-  update(id: string, data: UserUpdateDto): Promise<UserDoc | null> {
-    // your logic goes here →  return User.findByIdAndUpdate(id, data, { new: true, runValidators: true });
-  },
-
-  remove(id: string): Promise<UserDoc | null> {
-    // your logic goes here →  return User.findByIdAndDelete(id);
+  // real list query: build filter conditionally → sort → paginate
+  async findAll(q: ProductQueryDto) {
+    const filter: Record<string, unknown> = {};
+    if (q.category) filter["category"] = q.category;
+    if (q.search)   filter["title"]    = { $regex: q.search, $options: "i" };
+    if (q.minPrice != null || q.maxPrice != null) {
+      filter["price"] = {
+        ...(q.minPrice != null && { $gte: q.minPrice }),
+        ...(q.maxPrice != null && { $lte: q.maxPrice }),
+      };
+    }
+    const [data, total] = await Promise.all([
+      Product.find(filter)
+        .sort({ [q.sortBy]: q.sort === "asc" ? 1 : -1 })
+        .skip((q.page - 1) * q.limit)
+        .limit(q.limit),
+      Product.countDocuments(filter),
+    ]);
+    return { data, page: q.page, limit: q.limit, total, totalPages: Math.ceil(total / q.limit) };
   },
 };
 ```
 
-**How autocomplete works here** (the part tutorials skip):
+**Why HTTP-free?** `findById` should be callable by a test or a script that has no `req`. Keeping
+HTTP out is what makes the service reusable.
 
-1. `User` is a **typed model** — `InferSchemaType` read your schema, so `User.findById(...)` already
-   resolves to `UserDoc | null`. Type `User.` and the editor lists every model method.
-2. Inside a method, the awaited doc is a `UserDoc`, so `user.email`, `user.fName`, `user._id` all
-   autocomplete from the schema — no hand-written `interface`.
-3. The **explicit return type** on each method is what makes the *controller* autocomplete: when it
-   writes `const user = await userService.findById(id)`, `user` is known to be `UserDoc | null`
-   without the controller importing anything Mongoose-specific.
+> 🧠 **`Record` one-liner:** `Record<K, V>` = *"an object whose keys are `K` and values are `V`"*
+> (built into TS, just sugar for `{ [key: K]: V }`). Here `Record<string, unknown>` lets us start
+> from `{}` and add arbitrary string keys to build the Mongo `filter` — a bare `{}` would reject
+> `filter["category"] = ...`. Use `unknown` over `any`: assign freely, but TS still guards reads.
 
-> Two sources of truth, cleanly split: the **Mongoose schema** generates the document type
-> (`UserDoc`); the **Zod schema** generates the request DTOs. The service is the *only* layer that
-> touches the database.
+---
 
-### `user.controller.ts` — the HTTP layer (thin: validation done, call service, respond)
+## 9. `product.model.ts` — the blueprint
+
+**One line:** *The Mongoose schema is the DB's own shape + last line of defense — Zod guards the door, this guards the database.*
 
 ```ts
-import { type Request, type Response } from "express";
-import catchAsync from "@/utils/catchAsync";
-import AppError from "@/utils/AppError";
-import { userService } from "./user.service";
-import type { UserCreateDto, UserParamsDto } from "./user.schema";
+import { model, Schema, type HydratedDocument, type InferSchemaType } from "mongoose";
 
-export const createUser = catchAsync(async (req: Request, res: Response) => {
-  const body = req.body as UserCreateDto;        // validated upstream by validateRequest
-  const user = await userService.create(body);   // `user` is UserDoc — full autocomplete
-  // your logic goes here (anything extra before responding)
-  res.status(201).json({ status: "success", data: user });
-});
+const productSchema = new Schema({
+  title:    { type: String, required: true, trim: true },
+  sku:      { type: String, required: true, unique: true },
+  price:    { type: Number, required: true, min: 0, max: 1_000_000 },
+  category: { type: String, required: true,
+              enum: ["electronics","books","clothing","food","toys"] },
+  quantity: { type: Number, required: true, min: 0 },
+  inStock:  { type: Boolean, default: true },
+  tags:     [{ type: String }],
+  description: { type: String },
+}, { timestamps: true });
 
-export const getUser = catchAsync(async (req: Request, res: Response) => {
-  const { _id } = req.params as UserParamsDto;
-  const user = await userService.findById(_id);
-  if (!user) throw new AppError("User not found", 404); // unknown id → 404, not 500
-  res.status(200).json({ status: "success", data: user });
-});
+export type ProductType = InferSchemaType<typeof productSchema>;
+export type ProductDoc  = HydratedDocument<ProductType>;
+export const Product    = model("Product", productSchema);
 ```
 
-### `user.route.ts` — validate, then hand off to the controller
-
-```ts
-import { Router } from "express";
-import validateRequest from "@/middlewares/validateRequest";
-import { userCreateSchema, userParamsSchema } from "./user.schema";
-import { createUser, getUser } from "./user.controller";
-
-const router = Router();
-router.post("/users", validateRequest(userCreateSchema), createUser);
-router.get("/users/:_id", validateRequest(userParamsSchema, "params"), getUser);
-
-export default router;
-```
-
-**The request's life:** `route` (validate) → `controller` (HTTP) → `service` (DB) → `model` (Mongoose).
-Each layer only knows the one directly below it.
+**Zod vs Mongoose:** Zod runs *first* at the HTTP edge (clean 400s, coercion, defaults);
+Mongoose runs *last* at the DB (enforces `unique`, which Zod can't know). Overlap = defense in depth.
 
 ---
 
-## Error Handling — how a bad request becomes a clean 400
+## 10. 🎬 ONE FULL CRUD TRACE — `PATCH /api/v1/products/:id`
 
-The pieces already in the boilerplate connect into one pipeline:
+`PATCH /api/v1/products/665f8a.../` with body `{ "price": 3999 }`
 
-```
-schema.safeParse fails
-  → validateRequest calls next(new AppError(message, 400))   // isOperational: true
-    → globalErrorHandler (src/middlewares/globalErrorHandler.ts)
-        ├─ development : full message + stack + error object
-        └─ production  : { status: "fail", message }   (operational errors only)
-```
+| # | Where | What happens |
+|---|-------|--------------|
+| 1 | **app.ts** | `app.use("/api/v1", productRoute)` matches the prefix → into the product router. |
+| 2 | **route** | matches `PATCH /products/:id` → runs the chain below. |
+| 3 | **validateRequest(params)** | `665f8a...` passes the ObjectId regex ✅ → writes clean value to `req.params`. |
+| 4 | **validateRequest(body)** | `{ price: 3999 }` passes `productUpdateSchema.partial()` ✅ → writes clean value to `req.body`. |
+| 5 | **catchAsync** | wraps `updateProduct`; if it throws, the error skips to the global handler. |
+| 6 | **updateProduct** | typed `req.params.id` + `req.body` (no casts) → `productService.update(id, body)`. |
+| 7 | **service.update** | `findByIdAndUpdate(id, { price: 3999 }, { new, runValidators })`. |
+| 8 | **result** | found → returns updated doc → controller sends `200 + data`. <br> not found → service returns `null` → controller `throw AppError(404)` → `catchAsync` → global handler → clean `404` JSON. |
 
-Because `AppError` sets `isOperational: true`, the validation message **is** exposed to the client in
-production (it's a 4xx the caller can act on). Unexpected 5xx errors stay hidden behind a generic
-"Something went wrong!" — see [`globalErrorHandler.ts`](src/middlewares/globalErrorHandler.ts).
-
----
-
-## API Response Standard
-
-Every route returns the **same envelope** so the frontend writes its response-handling logic once and
-trusts it everywhere. This project uses the **JSend** convention (`status: "success" | "fail" | "error"`).
-
-### The envelope
-
-```jsonc
-// success — single resource
-{ "status": "success", "data": { "fName": "Amit", "email": "amit@example.com" } }
-
-// success — list, with response metadata as TOP-LEVEL siblings of `data`
-{
-  "status": "success",
-  "results": 20,                              // metadata about the response
-  "meta": { "page": 2, "limit": 10, "total": 57 },
-  "data": { "users": [ /* ... */ ] }          // the actual payload
-}
-
-// fail — client's fault (validation, bad id) → 4xx
-{ "status": "fail", "message": "phone must be exactly 10 digits" }
-
-// error — server's fault (unexpected exception) → 5xx
-{ "status": "error", "message": "Something went wrong!" }
-```
-
-### The three rules
-
-| Rule | Why |
-|------|-----|
-| **HTTP status code is the source of truth** | The transport-level signal. HTTP clients (`axios`/`fetch`) branch on it automatically — `2xx` resolves, `4xx`/`5xx` rejects. **Always set the real code** (`AppError(msg, 404)`). Never return `200` with `{ status: "fail" }` — that breaks every client's error handling. |
-| **The body field is secondary** | `status` + `message` confirm the outcome and carry the human-readable text. Control flow keys off the HTTP code; *what you show the user* comes from the body. |
-| **Payload → inside `data`; metadata → top-level** | Resource fields nest inside `data`. Info *about the response* (pagination, counts, request id) sit beside `data`, or grouped under `meta` — they describe the response, not the resource. |
-
-> **`success`/`fail`/`error` maps onto `AppError`:** `fail` = operational 4xx the caller can act on
-> (exposed in production), `error` = unexpected 5xx hidden behind a generic message. This is exactly
-> what [`globalErrorHandler.ts`](src/middlewares/globalErrorHandler.ts) already does.
-
-**The deciding question for any key:** *is this part of the thing the client asked for (→ `data`),
-or info about the response itself (→ top-level / `meta`)?* Above all — **pick one shape and use it on
-every route.** A consistent, boring envelope is worth more than a clever one.
+**The whole thing in one sentence:**
+*Route picks the line → bouncer cleans & writes the typed data back to its native slot → catchAsync guards the handler → controller translates → service does the DB work → model is the shape — and bad data dies at the bouncer.*
 
 ---
 
-## Best-Practice Checklist
+## 11. Your checklist to make it real
 
-- ✅ **Validate at the edge** — in middleware, before controllers. Controllers assume valid input.
-- ✅ **One schema = source of truth** — runtime validation *and* the TS type (`z.infer`). Never both.
-- ✅ **Coerce query & params** — they're always strings on the wire; use `z.coerce.*` + `.default()`.
-- ✅ **Write the parsed data back** to `req[source]`, or coercion/defaults are silently lost.
-- ⚠️ **Express 5: `req.query`/`req.params` are getter-only** — use `Object.defineProperty`, never `=`.
-- ✅ **`safeParse` over `parse`** in middleware — turn the result into an `AppError`, skip `try/catch`.
-- ✅ **`.partial()` for updates** — derive the update schema from create; don't duplicate fields.
-- ✅ **Plain `Request`/`Response` in controllers** — bind validated data with `as Dto` (or `schema.parse`); no custom typed-request helpers.
-- ✅ **`import type` for type-only imports** — required by `verbatimModuleSyntax` in this tsconfig.
-- ✅ **Prefix unused params with `_`** — `noUnusedParameters` is on (e.g. `_res`).
+- [ ] Restore `src/types/express.ts` (§3).
+- [ ] `validateRequest` uses `Object.defineProperty` write-back (§4) — not `req.x = ...`.
+- [ ] Controllers typed with `TypedRequest*`, **zero `as` casts** (§6).
+- [ ] Route: PATCH chains **params + body** validators (§7).
+- [ ] Service: `update` has `runValidators: true`; `findAll` actually filters/sorts/paginates (§8).
+- [ ] DELETE returns `204` no body (§6).
+- [ ] `npx tsc --noEmit` clean.
 
 ---
 
-## Try It
+## 12. 🧠 TS keywords cheat-card (don't forget)
 
-```bash
-npm run dev
-```
-
-```bash
-# ✅ valid create
-curl -X POST http://localhost:6001/api/v1/users \
-  -H "Content-Type: application/json" \
-  -d '{"fName":"Amit","email":"amit@example.com","phone":"9876543210"}'
-
-# ❌ bad email + 3-digit phone → 400 with field-level message
-curl -X POST http://localhost:6001/api/v1/users \
-  -H "Content-Type: application/json" \
-  -d '{"fName":"A","email":"not-an-email","phone":"123"}'
-# → { "status": "fail", "message": "fName: ...; email: ...; phone: phone must be exactly 10 digits" }
-
-# ✅ query coercion + defaults — omit params and watch them fill in
-curl "http://localhost:6001/api/v1/users?page=2"
-# → query: { page: 2, limit: 10, sort: "asc", sortBy: "fName" }
-
-# ❌ invalid ObjectId → 400
-curl -X DELETE http://localhost:6001/api/v1/users/123
-```
-
----
-
-## File Map
-
-| File | Role |
-|------|------|
-| [`src/modules/users/user.model.ts`](src/modules/users/user.model.ts) | Mongoose schema + model; `UserDoc` type via `InferSchemaType` |
-| [`src/modules/users/user.schema.ts`](src/modules/users/user.schema.ts) | Zod schemas + inferred DTOs (request source of truth) |
-| [`src/modules/users/user.service.ts`](src/modules/users/user.service.ts) | Data layer — `create`/`findAll`/`findById`/`update`/`remove`; only layer touching the DB |
-| [`src/middlewares/validateRequest.ts`](src/middlewares/validateRequest.ts) | Reusable `validateRequest(schema, source)` factory |
-| [`src/modules/users/user.controller.ts`](src/modules/users/user.controller.ts) | HTTP layer — bind DTOs with `as`, call the service, respond |
-| [`src/modules/users/user.route.ts`](src/modules/users/user.route.ts) | Routes with validation chained before each controller |
-| [`src/utils/AppError.ts`](src/utils/AppError.ts) | Operational error class (`isOperational: true`) |
-| [`src/utils/catchAsync.ts`](src/utils/catchAsync.ts) | Async wrapper — forwards errors to `next()` |
-| [`src/middlewares/globalErrorHandler.ts`](src/middlewares/globalErrorHandler.ts) | Dev/prod error formatting |
+| Keyword | One line | Where I used it |
+|---------|----------|-----------------|
+| **`Record<K, V>`** | Object with `K`-typed keys + `V`-typed values; sugar for `{ [key: K]: V }`. Use `Record<string, unknown>` to build an object from `{}` and add arbitrary keys (e.g. a Mongo `filter`). | `findAll` filter (§8) |
+| **`never`** | "Nothing valid belongs here." In `TypedRequest<P, B, Q>`, mark an unused slot `never` — e.g. query on a PATCH. More deliberate than empty `{}`. | `updateProduct` (§6) |
+| **`unknown` vs `any`** | Both let you *assign* anything; `unknown` still forces a check before you *read/use* the value, `any` switches checking off. Prefer `unknown`. | filter values (§8) |
+| **`z.infer<typeof schema>`** | Generate the TS type *from* the Zod schema — write the rule once, the type follows (no drift). | every DTO (§2) |
+| **`async` rule of thumb** | Only need `async`/`await` when you use a resolved value *inside* the fn; one-liners that just pass the promise through don't. | `findAll` vs `findById` (§8) |
