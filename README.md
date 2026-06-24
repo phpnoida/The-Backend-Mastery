@@ -133,6 +133,16 @@ export type ApiError = {
   status: "fail" | "error";
   message: string;
 };
+
+// Reusable shape for ANY list endpoint — define the pagination envelope ONCE,
+// not re-typed per resource. `T` is the element type (ProductDoc, OrderDoc, …).
+export type Paginated<T> = {
+  data: T[];
+  totalRec: number;
+  page: number;
+  limit: number;
+  totalPage: number;
+};
 ```
 
 **How to use it** — Express's `Response` is generic too; that second slot is the *same* `ResBody`
@@ -149,8 +159,36 @@ async (req: TypedRequestBody<ProductCreateDto>, res: Response<ApiResponse<Produc
 }
 ```
 
-For the list endpoint, `T` becomes the paginated shape:
-`Response<ApiResponse<{ items: ProductDoc[]; page: number; limit: number; total: number }>>`.
+**Composing the two for a list endpoint** — `Paginated<T>` is the *payload* shape; `ApiResponse<T>`
+is the *envelope*. The list endpoint nests one inside the other — `T` becomes `Paginated<ProductDoc>`:
+
+```ts
+// service returns  → Promise<Paginated<ProductDoc>>
+// controller types → Response<ApiResponse<Paginated<ProductDoc>>>
+async (req: TypedRequestQuery<ProductQueryDto>, res: Response<ApiResponse<Paginated<ProductDoc>>>) => {
+  const data = await productService.findAll(req.query); // data: Paginated<ProductDoc>
+  res.status(200).json({ status: "success", message: "Products fetched", data });
+}
+```
+
+…which serializes to a **`data.data` double-nesting** — the pagination meta sits *beside* the rows
+inside the envelope's `data`:
+
+```jsonc
+{
+  "status": "success",
+  "message": "Products fetched",
+  "data": {                 // ← ApiResponse.data  (this is the Paginated<T>)
+    "data": [ /* products */ ],   // ← Paginated.data (the rows) → client reads body.data.data
+    "totalRec": 42, "page": 1, "limit": 10, "totalPage": 5
+  }
+}
+```
+
+> 🧠 **Nested vs flat — a one-time design call.** The `data.data` nesting above is normal and fine.
+> Some teams instead **flatten** pagination meta beside the rows so clients read `body.data` directly:
+> `{ status, message, data: ProductDoc[], meta: { totalRec, page, limit, totalPage } }`.
+> Both are production-grade — pick one and apply it to *every* list endpoint. Consistency > preference.
 
 **Naming convention (what pros use):** name type files by **concern**, not by HTTP class.
 - `express.ts` → request-side helpers (`TypedRequest*`) — wraps Express's `Request`. *(keep this name)*
@@ -461,3 +499,303 @@ Mongoose runs *last* at the DB (enforces `unique`, which Zod can't know). Overla
 | **`unknown` vs `any`** | Both let you *assign* anything; `unknown` still forces a check before you *read/use* the value, `any` switches checking off. Prefer `unknown`. | filter values (§8) |
 | **`z.infer<typeof schema>`** | Generate the TS type *from* the Zod schema — write the rule once, the type follows (no drift). | every DTO (§2) |
 | **`async` rule of thumb** | Only need `async`/`await` when you use a resolved value *inside* the fn; one-liners that just pass the promise through don't. | `findAll` vs `findById` (§8) |
+
+---
+
+## 13. `server.ts` — graceful shutdown (the production exit)
+
+**One line:** *When the platform says "stop" (a deploy, a Ctrl+C), don't drop the process dead —
+stop taking new requests, let in-flight ones finish, close the DB pool, then exit `0`.*
+
+Why this matters: in production your app is restarted **constantly** — every deploy, every
+autoscale event, every `docker stop` sends a **SIGTERM**. If you just `process.exit()` on that
+signal, any request being served right then is cut off mid-response and the Mongo connection pool
+is abandoned. Graceful shutdown is the difference between "zero-downtime deploy" and "every deploy
+500s a few unlucky users."
+
+```ts
+import { connectDB, disconnectDB } from "./config/mongoose";
+
+// EXPECTED shutdowns (deploy / Ctrl+C), not crashes → exit 0, and tear down IN ORDER:
+// stop taking new work → drain in-flight requests → close the DB pool.
+const gracefulShutdown = async (signal: string) => {
+  console.log(`\n${signal} received — shutting down gracefully...`);  // shows up in container logs
+
+  // 1. Stop accepting NEW connections. Callback fires only AFTER in-flight
+  //    requests finish — this "drain" is what avoids cutting clients off mid-deploy.
+  server.close(async () => {
+    // 2. HTTP drained → now safe to close the Mongo pool. (Closing it BEFORE the
+    //    drain could kill a query a still-running request needs.)
+    await disconnectDB();
+    console.log("Process terminated cleanly ✅");
+
+    // 3. exit 0 = "I meant to stop." A crash exits 1. Orchestrators read this code.
+    process.exit(0);
+  });
+
+  // 4. Safety valve: if draining hangs (stuck keep-alive socket, slow query), don't
+  //    wait forever — force-exit after 10s. .unref() lets us exit earlier if done first.
+  setTimeout(() => {
+    console.error("Forced shutdown — drain timed out 💥");
+    process.exit(1);
+  }, 10_000).unref();
+};
+
+// SIGTERM: Docker / Kubernetes / PM2 on deploy, scale-down, or `docker stop`.
+// SIGINT:  Ctrl+C in the terminal during local dev.
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT",  () => gracefulShutdown("SIGINT"));
+```
+
+**The order is the whole point** — `server.close()` first (stop + drain), `disconnectDB()` second
+(only once nothing needs the DB), `exit(0)` last. Flip any two and you reintroduce the bug you were
+trying to fix.
+
+> 🧠 **Signals cheat:** `SIGTERM` = "please stop" (polite, what platforms send — you get to clean
+> up). `SIGKILL` = "stop NOW" (can't be caught — never run cleanup, so never rely on it). `SIGINT`
+> = Ctrl+C. We handle the two we *can* catch; nothing can be done about SIGKILL by design.
+
+> ⚠️ **Don't confuse the four handlers in `server.ts`:**
+> `uncaughtException` / `unhandledRejection` are **crash** nets → exit **1** (state is polluted,
+> bail fast). `SIGTERM` / `SIGINT` are **intentional** shutdowns → drain, then exit **0**.
+
+---
+
+## 14. `app.ts` — the security & hardening layer (helmet · CORS · body cap · sanitize)
+
+**One line:** *Before any request reaches a route, it passes through a fixed stack — set security
+headers → check the browser origin → cap the body size → strip NoSQL-injection keys — and **order
+matters**, each layer assumes the one before it already ran.*
+
+```ts
+const app = express();
+
+app.use(helmet());                       // 1. security headers FIRST (cover every response)
+app.use(cors(corsOptions));              // 2. browser origin policy
+app.options("*splat", cors(corsOptions));// 2b. answer the OPTIONS preflight for every route
+app.use(express.json({ limit: "10kb" }));// 3. parse JSON body, but cap its size
+app.use(mongoSanitize);                  // 4. strip `$`/`.` keys (needs body parsed → after #3)
+
+app.use("/api/v1", productRoute);        // routes
+app.use((_req,_res,next) => next(new AppError("Invalid url", 404))); // 404
+app.use(globalErrorHandler);             // error handler LAST
+```
+
+> 🧠 **Why this order?** helmet first so even an error response is protected; `express.json` before
+> `mongoSanitize` because you can't sanitize a body that hasn't been parsed yet; error handler last
+> because Express only routes to a 4-arg handler *after* everything else has had its turn.
+
+### 14.1 `helmet()` — secure response headers
+
+**One line:** *One line that sets ~15 hardening headers and removes the `X-Powered-By: Express`
+giveaway — pure upside, no config needed for a JSON API.*
+
+It adds `Strict-Transport-Security` (force HTTPS), `X-Content-Type-Options: nosniff` (stop MIME
+sniffing), frame protection (clickjacking), and more. We set it **first** so every response —
+including errors — carries them.
+
+### 14.2 CORS — the one everybody gets asked about
+
+**One line:** *CORS is a **browser** rule that decides which web origins may *read* your API's
+responses; it is configured on the server but enforced by the browser — so it is NOT a security
+wall around your data.*
+
+```ts
+const corsOptions: CorsOptions = {
+  origin(origin, cb) {
+    // !origin → no Origin header → Postman / curl / server-to-server / health check → allow.
+    // whitelisted browser origin → allow. anything else → 403.
+    if (!origin || ENV.CORS_ORIGINS.includes(origin)) return cb(null, true);
+    return cb(new AppError(`CORS: origin '${origin}' is not allowed`, 403));
+  },
+  credentials: true,                                   // allow cookies / Authorization cross-origin
+  methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+};
+app.use(cors(corsOptions));
+app.options("*splat", cors(corsOptions));              // Express 5: named wildcard, bare "*" is invalid
+```
+
+**Whitelist, never `*`** — origins live in `CORS_ORIGINS` (comma-separated env var, parsed to an
+array in `env.ts`). Add real domains in staging/prod; localhost in dev.
+
+#### ⭐ The famous CORS interview questions (know these cold)
+
+| Question | Answer |
+|----------|--------|
+| **Does CORS protect my server?** | **No.** It's enforced by the *browser*, not the server. It only controls which web pages can *read* your response via JS. curl/Postman/another backend ignore it entirely. CORS ≠ auth — never treat it as a security boundary for your data. |
+| **Why does Postman work but my React app gets a CORS error?** | Postman/curl aren't browsers (don't enforce CORS) **and** send no `Origin` header. Our `!origin` branch allows no-Origin requests, so tools pass. A browser on a non-whitelisted origin *does* send Origin → rejected. |
+| **What is a preflight request?** | For "non-simple" requests (PATCH/DELETE/PUT, JSON content-type, or custom headers like `Authorization`), the browser auto-sends an `OPTIONS` "am I allowed?" first. `cors()` answers it with the `Access-Control-Allow-*` headers — that's what `app.options(...)` covers. |
+| **Why can't `origin: '*'` be used with `credentials: true`?** | The spec forbids `Allow-Origin: *` together with `Allow-Credentials: true`. With cookies/auth you must echo back a *specific* origin — which is exactly why we whitelist. |
+| **Simple vs non-simple request?** | "Simple" = GET/HEAD/POST with only safe headers + a basic content-type → no preflight. Anything else triggers the OPTIONS preflight. |
+
+### 14.3 `express.json({ limit: "10kb" })` — body-size cap
+
+**One line:** *Parsing JSON is free for an attacker to abuse — a 50 MB body can exhaust memory/CPU,
+so cap it to the largest body you actually expect.* Oversized bodies are rejected before your code
+runs. Tune `10kb` to your real payloads (file uploads use a different pipeline entirely).
+
+### 14.4 `mongoSanitize` — NoSQL-injection defense (Express-5-safe)
+
+**One line:** *Mongo queries are plain objects, so unsanitized input lets an attacker inject
+operators (`$gt`, `$ne`) to bypass logic — we strip any key starting with `$` or containing `.`.*
+
+```ts
+// THE ATTACK: login with  { "email": { "$gt": "" }, "password": { "$gt": "" } }
+// `$gt: ""` matches ANY value → findOne returns the first user → auth bypass.
+const sanitizeInPlace = (value: unknown): void => {
+  if (value === null || typeof value !== "object") return;
+  for (const key of Object.keys(value as Record<string, unknown>)) {   // keys = snapshot → safe to delete
+    if (key.startsWith("$") || key.includes(".")) {
+      delete (value as Record<string, unknown>)[key];
+      continue;
+    }
+    sanitizeInPlace((value as Record<string, unknown>)[key]);          // recurse into nested objects/arrays
+  }
+};
+// middleware: sanitizeInPlace(req.body); sanitizeInPlace(req.query); sanitizeInPlace(req.params);
+```
+
+> ⚠️ **Why not the popular `express-mongo-sanitize`?** Its v2 does `req.query = clean`. In **Express 5**
+> `req.query` / `req.params` are **getter-only**, so that assignment **throws** `Cannot set property
+> query` — the *same* trap that forced `validateRequest` to use `Object.defineProperty` (§4). The fix
+> is to mutate the objects **in place** (delete bad keys), never reassign the getter. (Your
+> `xss-clean` dependency breaks the same way — leave it unwired on Express 5.)
+
+> 🧠 **Defense in depth here:** Zod (§2) already strips unknown keys on *validated* routes, so a
+> `$gt` in the body usually dies at the bouncer. `mongoSanitize` is the belt-and-suspenders layer
+> that also covers any route you forget to validate — security layers should overlap, not rely on
+> one another.
+
+### 14.5 What's deliberately left out (and why)
+
+| Skipped | Why / when to add |
+|---------|-------------------|
+| **Rate limiting** (`express-rate-limit`) | Deferred — add before exposing publicly to blunt brute-force / scraping. |
+| **`helmet` CSP tuning** | Default helmet is right for a JSON API; tune Content-Security-Policy only when serving HTML. |
+| **Auth / RBAC** | Its own branch (`feature/auth-rbac`). CORS is *not* a substitute (see Q1 above). |
+
+---
+
+## 15. `product.service.ts` — aggregation pipelines (the mental model)
+
+**One line:** *An aggregation is an **assembly line for data**: docs enter at the top and flow through
+an ordered array of **stages** — each stage reshapes the stream and hands it to the next. `find()`
+returns documents; `aggregate()` **computes** over them (group, count, average, join, bucket).*
+
+```
+Product collection  ──►  [ $match ]  ──►  [ $group ]  ──►  [ $sort ]  ──►  [ $project ]  ──►  result
+   (all docs)            filter rows     fold into        order the        choose/rename
+                         (use index!)    buckets          buckets          output fields
+```
+
+> 🧠 **`find` vs `aggregate`:** `find({price:{$gt:10}})` = "give me the matching *rows*."
+> `aggregate([...])` = "*derive new facts* from the rows" — totals, averages, per-group counts,
+> joined data. If the answer is a **number or a summary**, reach for `aggregate`.
+
+### Stage cheat-card (the 8 you'll use 90% of the time)
+
+| Stage | SQL analogy | Does |
+|-------|-------------|------|
+| `$match` | `WHERE` | Filter docs. **Put it FIRST** so it can use an index and shrink the stream early. |
+| `$group` | `GROUP BY` | Fold many docs into buckets keyed by `_id`; compute `$sum`, `$avg`, `$min`, `$max`. |
+| `$sort` | `ORDER BY` | Order the stream. After `$group`, sort on the computed fields. |
+| `$project` | `SELECT a, b` | Pick / rename / compute output fields (`1` keep, `0` drop). |
+| `$limit` / `$skip` | `LIMIT` / `OFFSET` | Pagination. |
+| `$lookup` | `JOIN` | Pull in docs from another collection. |
+| `$facet` | — | Run **several sub-pipelines on the same input** in one query (data + count together). |
+| `$unwind` | — | Explode an array field into one doc per element (e.g. one row per `tag`). |
+
+### Example 1 — category stats (the "give me a dashboard number" case)
+
+**One line:** *Group every product by `category` → count them, average the price, sum the stock.*
+
+```ts
+// productService.categoryStats()
+async categoryStats() {
+  return Product.aggregate([
+    { $match: { inStock: true } },                 // 1. only sellable products (index-friendly, first)
+    { $group: {                                    // 2. fold into one bucket PER category
+        _id: "$category",                          //    bucket key = the category value
+        count:    { $sum: 1 },                     //    +1 per doc in the bucket
+        avgPrice: { $avg: "$price" },              //    average across the bucket
+        totalQty: { $sum: "$quantity" },           //    sum across the bucket
+    }},
+    { $sort: { count: -1 } },                       // 3. most-stocked category first
+    { $project: {                                   // 4. tidy the shape the API returns
+        _id: 0, category: "$_id",                   //    rename _id → category, hide raw _id
+        count: 1,
+        avgPrice: { $round: ["$avgPrice", 2] },     //    money → 2 decimals
+        totalQty: 1,
+    }},
+  ]);
+}
+// → [{ category: "electronics", count: 42, avgPrice: 199.99, totalQty: 530 }, ...]
+```
+
+### Example 2 — `$facet`: paginated data **and** total count in ONE round trip
+
+**One line:** *Your `findAll` (§8) runs `find` + `countDocuments` as **two** queries; `$facet` runs
+both branches over the same filtered stream in **one** trip to Mongo — the pro pattern for paginated
+list endpoints.*
+
+```ts
+// productService.findAllFacet(q)
+async findAllFacet(q: ProductQueryDto) {
+  const filter = buildFilter(q);                    // same conditional filter you built in §8
+  const [result] = await Product.aggregate([
+    { $match: filter },                             // filter ONCE — both branches below reuse it
+    { $facet: {                                     // two sub-pipelines on the SAME input:
+        data: [                                     //   branch A → the page of documents
+          { $sort:  { [q.sortBy]: q.sort === "asc" ? 1 : -1 } },
+          { $skip:  (q.page - 1) * q.limit },
+          { $limit: q.limit },
+        ],
+        meta: [{ $count: "total" }],                //   branch B → just the total count
+    }},
+    { $project: {                                   // flatten meta:[{total}] → a plain number
+        data: 1,
+        total: { $ifNull: [{ $arrayElemAt: ["$meta.total", 0] }, 0] }, // 0 when no matches
+    }},
+  ]);
+  const total = result?.total ?? 0;
+  return { data: result?.data ?? [], page: q.page, limit: q.limit, total,
+           totalPages: Math.ceil(total / q.limit) };
+}
+```
+
+> 🧠 **Why `$facet` beats two queries:** the `$match` (the expensive part) runs **once** and both
+> branches share it — fewer round trips, one consistent snapshot. The cost: results live in memory
+> between branches, so always `$match` *before* `$facet` to keep the stream small.
+
+### Example 3 — `$lookup`: the JOIN Mongo says it doesn't have
+
+**One line:** *Pull related docs from another collection — here, attach each product's `reviews`.*
+
+```ts
+// imagine a separate `reviews` collection: { productId, rating, text }
+async withReviews(id: string) {
+  return Product.aggregate([
+    { $match: { _id: new mongoose.Types.ObjectId(id) } },  // ⚠️ aggregate does NOT auto-cast _id — do it yourself
+    { $lookup: {
+        from: "reviews",            // the OTHER collection (its real MongoDB name, usually plural/lowercased)
+        localField: "_id",          // field on THIS doc (product)
+        foreignField: "productId",  // field on the review that points back
+        as: "reviews",              // matched reviews land in this NEW array field
+    }},
+    { $addFields: { avgRating: { $avg: "$reviews.rating" } } }, // compute on the joined array
+  ]);
+}
+```
+
+### Gotchas that bite everyone (memorize)
+
+| Gotcha | Fix |
+|--------|-----|
+| **`_id` isn't auto-cast in `aggregate`.** `find()` casts a string id for you; `$match` does **not**. | Wrap it: `new mongoose.Types.ObjectId(id)`. |
+| **`$match` late = slow.** A `$match` after `$group`/`$lookup` can't use an index. | Put `$match` (and `$limit`) as **early** as possible. |
+| **`aggregate()` returns plain JS objects, not Mongoose docs.** | No `.save()`, no virtuals, no getters — you get raw data. That's a feature for read APIs. |
+| **`$group._id` is mandatory.** `_id: null` groups *everything* into one bucket (use for a grand total). | `{ $group: { _id: null, grandTotal: { $sum: "$price" } } }`. |
+
+> 🧠 **One-sentence model:** `find` *selects rows*, `aggregate` *manufactures answers* — chain small
+> stages, filter first, and remember each stage only sees what the previous stage emitted.

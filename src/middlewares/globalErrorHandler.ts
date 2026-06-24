@@ -2,6 +2,10 @@ import { type Request, type Response, type NextFunction } from "express";
 import mongoose from "mongoose";
 import AppError from "../utils/AppError";
 import ENV from "../config/env";
+import type { ApiError } from "@/types/api";
+
+// Dev responses add stack/error on TOP of the ApiError contract (never sent in prod).
+type DevErrorBody = ApiError & { stack?: string | undefined; error?: unknown };
 
 // Convert Mongoose/MongoDB errors into operational AppErrors so
 // sendProdError exposes a meaningful message instead of "Something went wrong".
@@ -31,26 +35,26 @@ const normalizeError = (err: Error): AppError => {
   return new AppError(err.message || "Internal Server Error", 500, false);
 };
 
-const sendDevError = (err: AppError, res: Response) => {
+const sendDevError = (err: AppError, res: Response<DevErrorBody>) => {
   res.status(err.statusCode).json({
     status: err.status,
-    message: err.message,
+    msg: err.message,
     stack: err.stack,
     error: err,
   });
 };
 
-const sendProdError = (err: AppError, res: Response) => {
+const sendProdError = (err: AppError, res: Response<ApiError>) => {
   if (err.isOperational) {
     res.status(err.statusCode).json({
       status: err.status,
-      message: err.message,
+      msg: err.message,
     });
   } else {
     console.error("ERROR 💥", err);
     res.status(500).json({
       status: "error",
-      message: "Something went wrong!",
+      msg: "Something went wrong!",
     });
   }
 };
