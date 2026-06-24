@@ -28,6 +28,7 @@ import mongoose from "mongoose";
 import Order from "../../src/modules/order/order.model.js";
 import Customer from "../../src/modules/customer/customer.model.js";
 import Review from "../../src/modules/reviews/review.model.js";
+import Product from "../../src/modules/product/product.model.js";
 
 await mongoose.connect("mongodb://localhost:27017/backend-mastery-dev");
 console.log("Connected\n");
@@ -38,12 +39,45 @@ console.log("Connected\n");
 // Stages: $bucket
 // YOUR ANSWER:
 
+const fn1 = async () => {
+  const data = await Order.aggregate([
+    {
+      $bucket: {
+        groupBy: "$totalAmount",
+        boundaries: [100000, 200000, 300000, Infinity],
+        default: "other",
+        output: {
+          count: { $sum: 1 },
+        },
+      },
+    },
+  ]);
+  console.log("data1-->", data);
+};
+// await fn1();
 
 // ─── Q2 ──────────────────────────────────────────────────────────────────────
 // Same bands as Q1 but also return the AVERAGE totalAmount per band.
 // Stages: $bucket (output with $sum and $avg)
 // YOUR ANSWER:
 
+const fn2 = async () => {
+  const data = await Order.aggregate([
+    {
+      $bucket: {
+        groupBy: "$totalAmount",
+        boundaries: [100000, 200000, 300000, Infinity],
+        default: "other",
+        output: {
+          count: { $sum: 1 },
+          avg: { $avg: "$totalAmount" },
+        },
+      },
+    },
+  ]);
+  console.log("data2--->", data);
+};
+// await fn2();
 
 // ─── Q3 ──────────────────────────────────────────────────────────────────────
 // Remove the Infinity boundary so the top band is [10000]. Find an order above 10000
@@ -51,6 +85,22 @@ console.log("Connected\n");
 // Stages: $bucket
 // YOUR ANSWER:
 
+const fn3 = async () => {
+  const data = await Order.aggregate([
+    {
+      $bucket: {
+        groupBy: "$totalAmount",
+        boundaries: [100000, 200000, 300000],
+        default: "other",
+        output: {
+          count: { $sum: 1 },
+        },
+      },
+    },
+  ]);
+  console.log("data3-->", data);
+};
+// await fn3();
 
 // ─── Q4 ──────────────────────────────────────────────────────────────────────
 // $bucketAuto — split customers into 5 buckets by loyaltyPoints. Return each bucket's
@@ -58,12 +108,46 @@ console.log("Connected\n");
 // Stages: $bucketAuto
 // YOUR ANSWER:
 
+const fn4 = async () => {
+  const data = await Customer.aggregate([
+    {
+      $bucketAuto: {
+        groupBy: "$loyaltyPoints",
+        buckets: 4,
+        output: {
+          memberCount: { $sum: 1 },
+        },
+      },
+    },
+  ]);
+  console.log("data4-->", data);
+};
+// await fn4();
 
 // ─── Q5 ──────────────────────────────────────────────────────────────────────
 // $bucketAuto — split active products into 4 buckets by avgRating; show count per bucket.
 // Stages: $match, $bucketAuto
 // YOUR ANSWER:
-
+const fn5 = async () => {
+  const data = await Product.aggregate([
+    {
+      $match: {
+        status: "active",
+      },
+    },
+    {
+      $bucketAuto: {
+        groupBy: "$avgRating",
+        buckets: 4,
+        output: {
+          count: { $sum: 1 },
+        },
+      },
+    },
+  ]);
+  console.log("data5-->", data);
+};
+await fn5();
 
 // ─── Q6 ──────────────────────────────────────────────────────────────────────
 // Rating histogram of reviews using $bucket with boundaries [1,2,3,4,5,6]
@@ -72,6 +156,22 @@ console.log("Connected\n");
 // Hint: 6 is the exclusive upper edge so rating 5 has a bucket to live in.
 // YOUR ANSWER:
 
+const fn6 = async () => {
+  const data = await Review.aggregate([
+    {
+      $bucket: {
+        groupBy: "$rating",
+        boundaries: [1, 2, 3, 4, 5, 6],
+        default: "other",
+        output: {
+          count: { $sum: 1 },
+        },
+      },
+    },
+  ]);
+  console.log("data6-->", data);
+};
+// await fn6();
 
 await mongoose.disconnect();
 console.log("\nDone.");

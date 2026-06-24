@@ -32,13 +32,40 @@ console.log("Connected\n");
 // How many active products are there? (just the number)
 // Stages: $match, $count
 // YOUR ANSWER:
-
+const fn1 = async () => {
+  const data = await Product.aggregate([
+    {
+      $match: {
+        status: "active",
+      },
+    },
+    {
+      $count: "totalActiveProduct",
+    },
+  ]);
+  console.log("data1-->", data);
+};
+// await fn();
 
 // ─── Q2 ──────────────────────────────────────────────────────────────────────
 // How many delivered orders are there?
 // Stages: $match, $count
 // YOUR ANSWER:
 
+const fn2 = async () => {
+  const data = await Order.aggregate([
+    {
+      $match: {
+        status: "delivered",
+      },
+    },
+    {
+      $count: "totalDelivered",
+    },
+  ]);
+  console.log("data2-->", data);
+};
+// await fn2();
 
 // ─── Q3 ──────────────────────────────────────────────────────────────────────
 // Orders per status, sorted desc — in ONE stage.
@@ -46,18 +73,44 @@ console.log("Connected\n");
 // Hint: compare this to what you wrote in 05-aggregation-basics Q1.
 // YOUR ANSWER:
 
+const fn3 = async () => {
+  const data = await Order.aggregate([
+    {
+      $sortByCount: "$status",
+    },
+  ]);
+  console.log("data3-->", data);
+};
+// await fn3();
 
 // ─── Q4 ──────────────────────────────────────────────────────────────────────
 // Customers per tier, sorted desc — in one stage.
 // Stages: $sortByCount
 // YOUR ANSWER:
-
+const fn4 = async () => {
+  const data = await Customer.aggregate([
+    {
+      $sortByCount: "$tier",
+    },
+  ]);
+  console.log("data4-->", data);
+};
+// await fn4();
 
 // ─── Q5 ──────────────────────────────────────────────────────────────────────
 // Orders per shipping city, sorted desc.
 // Stages: $sortByCount ($shippingAddress.city)
 // YOUR ANSWER:
 
+const fn5 = async () => {
+  const data = await Order.aggregate([
+    {
+      $sortByCount: "$shippingAddress.city",
+    },
+  ]);
+  console.log("data5-->", data);
+};
+// await fn5();
 
 // ─── Q6 ──────────────────────────────────────────────────────────────────────
 // Combine with $unwind (drilled in 05e): the most common product TAGS, sorted desc.
@@ -65,13 +118,41 @@ console.log("Connected\n");
 // Hint: $sortByCount works on whatever the previous stage emits — unwind first.
 // YOUR ANSWER:
 
+const fn6 = async () => {
+  const data = await Product.aggregate([
+    {
+      $unwind: "$tags",
+    },
+    {
+      $sortByCount: "$tags",
+    },
+  ]);
+  console.log("data6", data);
+};
+// await fn6();
 
 // ─── Q7 ──────────────────────────────────────────────────────────────────────
 // Prove the equivalence: write Q3 again the LONG way ($group + $sort) and confirm the
 // output matches $sortByCount.
 // Stages: $group, $sort
 // YOUR ANSWER:
-
+const fn7 = async () => {
+  const data = await Order.aggregate([
+    {
+      $group: {
+        _id: "$status",
+        count: { $sum: 1 },
+      },
+    },
+    {
+      $sort: {
+        count: -1,
+      },
+    },
+  ]);
+  console.log("data7-->", data);
+};
+// await fn7();
 
 await mongoose.disconnect();
 console.log("\nDone.");
